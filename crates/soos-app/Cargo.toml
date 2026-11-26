@@ -36,7 +36,7 @@ ureq = { version = "3", features = ["json"] }
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 tray-icon = { version = "0.25", default-features = false }
 # Not on Linux, which has no global hotkey; see `FULL_DESKTOP`.
-global-hotkey = "0.8"
+global-hotkey = "0.10"
 
 # To hide the Dock icon with the window; see `show_in_dock`. Both are
 # already in the build through eframe and tray-icon.

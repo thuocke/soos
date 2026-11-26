@@ -8,9 +8,8 @@ use global_hotkey::{Error as HotkeyError, GlobalHotKeyEvent, GlobalHotKeyManager
 use crate::style::{status_symbol, Palette};
 use crate::{AppEvent, SavedState, SoosApp};
 
-/// The keyboard's Calculator key on Windows (upstream `global-hotkey`
-/// can't register it; see CONTRIBUTING.md, "The hotkey patch"),
-/// Ctrl+Shift+Space on macOS, which has no such key.
+/// The keyboard's Calculator key on Windows (`global-hotkey` 0.10 or newer
+/// can register it), Ctrl+Shift+Space on macOS, which has no such key.
 pub(crate) fn default_hotkey() -> HotKey {
     if cfg!(target_os = "macos") {
         HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space)
@@ -70,7 +69,7 @@ pub(crate) fn egui_modifiers_to_hotkey_modifiers(m: egui::Modifiers) -> Modifier
     mods.set(Modifiers::CONTROL, m.ctrl);
     mods.set(Modifiers::SHIFT, m.shift);
     mods.set(Modifiers::ALT, m.alt);
-    mods.set(Modifiers::SUPER, m.mac_cmd);
+    mods.set(Modifiers::META, m.mac_cmd);
     mods
 }
 
@@ -104,7 +103,7 @@ pub(crate) fn needs_a_modifier(code: Code, mods: Modifiers) -> bool {
     let function_key = name
         .strip_prefix('F')
         .is_some_and(|n| n.parse::<u8>().is_ok());
-    !function_key && !mods.intersects(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER)
+    !function_key && !mods.intersects(Modifiers::CONTROL | Modifiers::ALT | Modifiers::META)
 }
 
 impl SoosApp {
@@ -281,7 +280,7 @@ mod tests {
             Code::KeyK,
             Modifiers::ALT | Modifiers::SHIFT
         ));
-        assert!(!needs_a_modifier(Code::Space, Modifiers::SUPER));
+        assert!(!needs_a_modifier(Code::Space, Modifiers::META));
         assert!(!needs_a_modifier(Code::F13, Modifiers::empty()));
         assert!(!needs_a_modifier(Code::F5, Modifiers::SHIFT));
     }

@@ -283,15 +283,6 @@ keytool -genkeypair -v -keystore soos.jks -alias soos \
 A local `assembleRelease` with none of those variables set gives an unsigned
 `.apk`.
 
-### The hotkey patch
-
-[thuocke/global-hotkey-patched](https://github.com/thuocke/global-hotkey-patched)
-is `global-hotkey` 0.8.0 with `Code::LaunchApp2`, the Calculator key, added
-to its Windows and X11 key tables, which upstream lacks. The root
-`Cargo.toml` pulls it in through `[patch.crates-io]`, pinned to a commit.
-That repository's `PATCH.md` shows the change and how to re-apply it when
-`global-hotkey` is upgraded.
-
 ### Fonts
 
 JetBrains Mono lacks most currency signs Soos can print (`₹`, `₩`, `₺`,
