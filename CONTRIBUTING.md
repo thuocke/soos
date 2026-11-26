@@ -104,6 +104,10 @@ cargo +1.88 check -p soos-cli --all-targets --locked
 (cd android && ./gradlew assembleDebug testDebugUnitTest lintDebug)
 ```
 
+`.github/workflows/codeql.yml` scans the Rust, Kotlin, C#, Python and
+workflow code on every pull request and once a week. It builds the Android
+app to read its Kotlin.
+
 `scripts/check-docs.py` reads the files Git tracks, so `git add` a new page
 before you run it.
 
