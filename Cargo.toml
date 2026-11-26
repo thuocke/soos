@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/soos-core",
+    "crates/soos-app",
+    "crates/soos-cli",
+    "crates/soos-android",
+]
+
+[workspace.package]
+version = "1.1.0"
+edition = "2021"
+# Set by egui/eframe 0.36. soos-core and soos-cli declare a lower one;
+# CI's `msrv` job checks the workspace on exactly this version.
+rust-version = "1.95"
+license = "MIT"
+authors = ["Ruler (https://github.com/thuocke)"]
+# The app's update check builds its GitHub API URL from this, and the API
+# doesn't follow an account rename, so keep the owner current.
+repository = "https://github.com/thuocke/soos"
+
+[profile.release]
+opt-level = "s"
+lto = true
+# One unit lets LTO see the whole crate: about 1% smaller, with no runtime
+# cost. `opt-level = "z"` would save about 12% more, but made heavy lines
+# such as `e^1000` up to 5x slower, past the engine's 200 ms `EVAL_TIMEOUT`
+# (a separate 2-second line limit sits above it).
+codegen-units = 1
+strip = true
+# Nothing catches a panic, so unwinding buys nothing. It also means any
+# panic ends the app: evaluation must turn bad input into an error (see
+# soos-core's length, depth and time caps).
+panic = "abort"

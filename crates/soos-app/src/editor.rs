@@ -1,0 +1,383 @@
+//! The document editor: one multiline `TextEdit` (so selection, undo and
+//! the caret work as usual), syntax colours from its layouter, and each
+//! line's result painted in a column beside it. A wrapped line's result sits
+//! beside its first row.
+
+use std::hash::{Hash, Hasher};
+use std::time::{Duration, Instant};
+
+use eframe::egui;
+use eframe::egui::text::{CCursor, CCursorRange, LayoutJob};
+use soos_core::format::{result_cells, Cell};
+use soos_core::highlight::TokenKind;
+
+use crate::style::{mono, mono_bold, text_format, text_format_in, Palette, CHAR_WIDTH};
+use crate::SoosApp;
+
+/// Shown in an empty document.
+pub(crate) const PLACEHOLDER: &str = "Type a calculation, like 15% off $120";
+
+/// Around a whole error label shown under its line.
+const WHOLE_ERROR_PAD: egui::Vec2 = egui::vec2(8.0, 2.0);
+/// How far out-of-date results fade toward the background.
+const STALE_DIM: f32 = 0.35;
+
+/// An error on the line being typed waits this long after the last
+/// keystroke: half a line is usually an error (`5 k` before `5 kg`).
+pub(crate) const ERROR_HOLD: Duration = Duration::from_millis(900);
+
+/// The whole buffer as a coloured `LayoutJob`, using soos-core's
+/// highlighter so colours follow what each line actually does.
+pub(crate) fn build_layout_job(text: &str, wrap_width: f32, palette: Palette) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    job.wrap.max_width = wrap_width;
+
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            job.append("\n", 0.0, text_format(palette.plain));
+        }
+        let mut cursor = 0usize;
+        for (range, kind) in soos_core::highlight::tokens(line) {
+            if range.start > cursor {
+                job.append(&line[cursor..range.start], 0.0, text_format(palette.plain));
+            }
+            let span = &line[range.clone()];
+            match kind {
+                // The `#` marks a heading; the heading itself is the
+                // strongest text on the page, not the faintest.
+                TokenKind::Header => {
+                    let marker = span.len() - span.trim_start_matches(['#', ' ']).len();
+                    job.append(&span[..marker], 0.0, text_format(palette.comment));
+                    let heading = text_format_in(mono_bold(), palette.plain);
+                    job.append(&span[marker..], 0.0, heading);
+                }
+                TokenKind::Comment => job.append(span, 0.0, text_format(palette.comment)),
+                TokenKind::Label | TokenKind::ConversionWord => {
+                    job.append(span, 0.0, text_format(palette.secondary));
+                }
+                TokenKind::Keyword => job.append(span, 0.0, text_format(palette.keyword)),
+            }
+            cursor = range.end;
+        }
+        if cursor < line.len() {
+            job.append(&line[cursor..], 0.0, text_format(palette.plain));
+        }
+    }
+    job
+}
+
+#[derive(Default)]
+struct Highlighter;
+
+impl egui::cache::ComputerMut<(&str, Palette), LayoutJob> for Highlighter {
+    fn compute(&mut self, (text, palette): (&str, Palette)) -> LayoutJob {
+        build_layout_job(text, f32::INFINITY, palette)
+    }
+}
+
+/// [`build_layout_job`], kept from the frame before while the text and the
+/// colours are the same: a frame is drawn for every mouse move.
+pub(crate) fn layout_job(
+    ctx: &egui::Context,
+    text: &str,
+    wrap_width: f32,
+    palette: Palette,
+) -> LayoutJob {
+    type Kept = egui::cache::FrameCache<LayoutJob, Highlighter>;
+    let mut job = ctx.memory_mut(|m| m.caches.cache::<Kept>().get((text, palette)).clone());
+    job.wrap.max_width = wrap_width;
+    job
+}
+
+pub(crate) const MIN_GUTTER: f32 = 90.0;
+/// So a long result can't squeeze out the expressions.
+pub(crate) const MAX_GUTTER_FRACTION: f32 = 0.45;
+pub(crate) const GUTTER_PAD: f32 = 12.0;
+/// Between the expressions and the result column.
+pub(crate) const COLUMN_GAP: f32 = 24.0;
+/// Between the document's scrollbar and the window's edge.
+const SCROLL_BAR_INSET: f32 = 3.0;
+/// Around the page: `TextEdit::margin()` is ignored once the `TextEdit`
+/// has `Frame::NONE`.
+pub(crate) const APP_PADDING: i8 = 28;
+
+/// A cell's width on the character grid.
+fn cell_width(cell: &Cell) -> f32 {
+    cell.shown.text.chars().count() as f32 * CHAR_WIDTH
+}
+
+/// The result column's width: the widest result, within limits. Errors
+/// don't count; a long one is cut instead (see [`error_budget`]).
+pub(crate) fn gutter_width(cells: &[Option<Cell>], available_width: f32) -> f32 {
+    let widest_value = cells
+        .iter()
+        .flatten()
+        .filter(|cell| cell.shown.error.is_none())
+        .map(cell_width)
+        .fold(0.0_f32, f32::max);
+    (widest_value + GUTTER_PAD * 2.0).clamp(MIN_GUTTER, available_width * MAX_GUTTER_FRACTION)
+}
+
+/// An error may use the free space to the left on its own line, but never
+/// less than the result column.
+pub(crate) fn error_budget(gutter_right: f32, row_right: f32, gutter_budget: f32) -> f32 {
+    (gutter_right - row_right - COLUMN_GAP).max(gutter_budget)
+}
+
+/// The line the caret is on, counting from 0.
+pub(crate) fn caret_line(text: &str, cursor: Option<CCursorRange>) -> Option<usize> {
+    let index = cursor?.primary.index.0;
+    Some(text.chars().take(index).filter(|&c| c == '\n').count())
+}
+
+impl SoosApp {
+    /// The active tab's text and its results. Clicking a result copies it.
+    pub(crate) fn document(&mut self, ui: &mut egui::Ui, palette: Palette) {
+        let stale = self.results_stale(ui.ctx());
+        let tab_id = egui::Id::new(("doc", self.tabs[self.active].id));
+        self.keep_focus(ui.ctx(), tab_id);
+
+        // The scroll area spans the window between the tab strip and the
+        // status bar, with the page's margins inside it: its scrollbar runs
+        // along the window's edge, over the right margin, and text scrolls
+        // up to the tab strip instead of stopping short of it.
+        let page_margin = egui::Margin {
+            left: APP_PADDING,
+            right: APP_PADDING,
+            top: APP_PADDING,
+            bottom: APP_PADDING / 2,
+        };
+        ui.scope(|ui| {
+            let scroll = &mut ui.spacing_mut().scroll;
+            scroll.floating_allocated_width = 0.0;
+            // A hair inside the window's edge, as macOS draws overlay bars.
+            scroll.bar_outer_margin = SCROLL_BAR_INSET;
+            // Not shrunk to the content, which ends short of the right
+            // margin, so the bar is at the window's edge.
+            egui::ScrollArea::vertical()
+                .auto_shrink(false)
+                .show(ui, |ui| {
+                    egui::Frame::new().inner_margin(page_margin).show(ui, |ui| {
+                        let available_width = ui.available_width();
+                        // Kept until the text, the results or how they're
+                        // shown change.
+                        let mut hasher = std::hash::DefaultHasher::new();
+                        let shown = (self.high_precision, self.decimal_comma);
+                        (self.active_text(), self.received, self.results.len(), shown)
+                            .hash(&mut hasher);
+                        let cells_for = hasher.finish();
+                        if self.cells_for != Some(cells_for) {
+                            self.cells = result_cells(
+                                self.active_text(),
+                                &self.results,
+                                self.high_precision,
+                                self.decimal_comma,
+                            );
+                            self.cells_for = Some(cells_for);
+                        }
+                        let cells = &self.cells;
+                        let gutter_width = gutter_width(cells, available_width);
+                        let text_width = (available_width - gutter_width - COLUMN_GAP).max(100.0);
+                        let mut layouter =
+                            |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                                let job = layout_job(ui.ctx(), buf.as_str(), wrap_width, palette);
+                                ui.fonts_mut(|f| f.layout_job(job))
+                            };
+
+                        let output = egui::TextEdit::multiline(&mut self.tabs[self.active].text)
+                            // Per tab, so Ctrl+Z can't undo into another tab.
+                            .id(tab_id)
+                            .frame(egui::Frame::NONE)
+                            .desired_width(text_width)
+                            // A click below the text still places the caret.
+                            .min_size(egui::vec2(text_width, ui.available_height()))
+                            .font(mono())
+                            .layouter(&mut layouter)
+                            .show(ui);
+
+                        if self.tabs[self.active].text.is_empty() {
+                            let hint = LayoutJob::single_section(
+                                PLACEHOLDER.to_owned(),
+                                text_format(palette.comment),
+                            );
+                            let galley = ui.fonts_mut(|f| f.layout_job(hint));
+                            ui.painter()
+                                .galley(output.galley_pos, galley, palette.comment);
+                        }
+
+                        let typing_line = self
+                            .last_edit
+                            .and_then(|at| ERROR_HOLD.checked_sub(at.elapsed()))
+                            .filter(|left| !left.is_zero())
+                            .and_then(|left| {
+                                ui.ctx().request_repaint_after(left);
+                                caret_line(&self.tabs[self.active].text, output.cursor_range)
+                            });
+
+                        let caret = caret_line(&self.tabs[self.active].text, output.cursor_range);
+                        let overlay_open = self.show_converters
+                            || self.show_example
+                            || self.show_settings
+                            || self.capturing_hotkey;
+                        let gutter_right =
+                            output.response.rect.right() + COLUMN_GAP + gutter_width - GUTTER_PAD;
+                        let gutter_budget = gutter_width - GUTTER_PAD;
+                        let mut line = 0usize;
+                        let mut starts_line = true;
+                        for row in &output.galley.rows {
+                            let this_line = line;
+                            let first_row =
+                                std::mem::replace(&mut starts_line, row.ends_with_newline);
+                            if row.ends_with_newline {
+                                line += 1;
+                            }
+                            let Some(Some(cell)) = cells.get(this_line).filter(|_| first_row)
+                            else {
+                                continue;
+                            };
+                            let is_error = cell.shown.error.is_some();
+                            if is_error && typing_line == Some(this_line) {
+                                continue;
+                            }
+                            let color = if is_error {
+                                palette.error
+                            } else {
+                                palette.result
+                            };
+                            let color = if stale {
+                                color.lerp_to_gamma(palette.background, STALE_DIM)
+                            } else {
+                                color
+                            };
+                            let row_rect = row.rect().translate(output.galley_pos.to_vec2());
+                            // A label longer than the column runs left into
+                            // the room its line leaves.
+                            let budget =
+                                error_budget(gutter_right, row_rect.right(), gutter_budget);
+                            let font = if cell.total && !is_error {
+                                mono_bold()
+                            } else {
+                                mono()
+                            };
+                            let mut job = LayoutJob::simple(
+                                cell.shown.text.clone(),
+                                font,
+                                color,
+                                f32::INFINITY,
+                            );
+                            job.wrap = egui::text::TextWrapping::truncate_at_width(budget);
+                            let galley = ui.fonts_mut(|f| f.layout_job(job));
+                            let width = galley.rect.width();
+                            let pos = egui::pos2(gutter_right - width, row_rect.top());
+                            let elided = galley.elided;
+                            ui.painter().galley(pos, galley, color);
+                            // A label cut short is shown whole under the line
+                            // the caret is on, so it doesn't need the mouse.
+                            // A clicked error says all of it there.
+                            let opened = self.opened_error == Some(this_line);
+                            let whole = match &cell.shown.error {
+                                Some(full) if opened => Some(full),
+                                Some(_) if elided && caret == Some(this_line) => {
+                                    Some(&cell.shown.text)
+                                }
+                                _ => None,
+                            };
+                            if let Some(whole) = whole.filter(|_| !overlay_open) {
+                                let whole = LayoutJob::simple(
+                                    whole.clone(),
+                                    mono(),
+                                    palette.error,
+                                    available_width,
+                                );
+                                let whole = ui.fonts_mut(|f| f.layout_job(whole));
+                                let at = egui::pos2(
+                                    gutter_right - whole.rect.width(),
+                                    row_rect.bottom(),
+                                );
+                                let plate = egui::Rect::from_min_size(at, whole.size())
+                                    .expand2(WHOLE_ERROR_PAD);
+                                let layer = egui::LayerId::new(
+                                    egui::Order::Foreground,
+                                    tab_id.with("error"),
+                                );
+                                let painter =
+                                    ui.ctx().layer_painter(layer).with_clip_rect(ui.clip_rect());
+                                painter.rect_filled(plate, 4.0, crate::tabs::tab_bar_fill(palette));
+                                painter.galley(at, whole, palette.error);
+                            }
+                            let click_rect = egui::Rect::from_min_size(
+                                egui::pos2(gutter_right - gutter_width, row_rect.top()),
+                                egui::vec2(gutter_width, row_rect.height()),
+                            );
+                            // An error's label isn't worth copying: a click
+                            // shows or hides its full message.
+                            let shown = &cell.shown;
+                            let response = match &shown.error {
+                                Some(full) => {
+                                    let label = ui
+                                        .allocate_rect(click_rect, egui::Sense::click())
+                                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                        .on_hover_text(full);
+                                    if label.clicked() {
+                                        self.opened_error = (!opened).then_some(this_line);
+                                    }
+                                    continue;
+                                }
+                                None => ui
+                                    .allocate_rect(click_rect, egui::Sense::click())
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand),
+                            };
+                            let response = match (&shown.full, elided && shown.error.is_none()) {
+                                (Some(full), _) => response.on_hover_text(full),
+                                (None, true) => response.on_hover_text(&shown.text),
+                                (None, false) => response,
+                            };
+                            if response.clicked() {
+                                ui.ctx().copy_text(shown.copy.clone());
+                                self.copied = Some((shown.copy.clone(), Instant::now()));
+                            }
+                        }
+                    });
+                });
+        });
+    }
+
+    /// The editor keeps the keyboard, as in any notepad, except while an
+    /// overlay is open or the hotkey is being set. A new or switched-to tab
+    /// opens with the caret at its end.
+    fn keep_focus(&mut self, ctx: &egui::Context, tab_id: egui::Id) {
+        if self.show_converters || self.show_example || self.show_settings || self.capturing_hotkey
+        {
+            ctx.memory_mut(|m| m.surrender_focus(tab_id));
+            self.focused_tab = None;
+            return;
+        }
+        let tab = self.tabs[self.active].id;
+        if self.focused_tab != Some(tab) {
+            let mut state = egui::TextEdit::load_state(ctx, tab_id).unwrap_or_default();
+            if state.cursor.char_range().is_none() {
+                let end = CCursor::new(self.active_text().chars().count());
+                state.cursor.set_char_range(Some(CCursorRange::one(end)));
+                state.store(ctx, tab_id);
+            }
+            self.focused_tab = Some(tab);
+        }
+        if ctx.memory(|m| m.focused()) != Some(tab_id) {
+            ctx.memory_mut(|m| m.request_focus(tab_id));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn caret_line_counts_newlines_before_the_caret() {
+        let at = |i| Some(CCursorRange::one(CCursor::new(i)));
+        assert_eq!(caret_line("1\n22\n3", at(0)), Some(0));
+        assert_eq!(caret_line("1\n22\n3", at(4)), Some(1));
+        assert_eq!(caret_line("1\n22\n3", at(5)), Some(2));
+        assert_eq!(caret_line("1", None), None);
+    }
+}

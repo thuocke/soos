@@ -1,0 +1,19 @@
+[package]
+name = "soos-cli"
+version.workspace = true
+edition.workspace = true
+# Lower than the app's, which egui sets: what a Linux distribution
+# packages has a chance of being new enough. fend-core needs 1.88. CI's
+# `msrv` job checks it.
+rust-version = "1.88"
+license.workspace = true
+authors.workspace = true
+description = "soos-cli \"20 inches in cm\" -- CLI for the soos calculator engine"
+
+[[bin]]
+name = "soos-cli"
+path = "src/main.rs"
+
+[dependencies]
+soos-core = { path = "../soos-core" }
+serde_json = "1"

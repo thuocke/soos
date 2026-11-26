@@ -1,0 +1,30 @@
+[package]
+name = "soos-core"
+version.workspace = true
+edition.workspace = true
+# Lower than the app's, which egui sets: what a Linux distribution
+# packages has a chance of being new enough. fend-core needs 1.88. CI's
+# `msrv` job checks it.
+rust-version = "1.88"
+license.workspace = true
+authors.workspace = true
+description = "Line-by-line natural-language calculator engine (no UI)"
+
+[dependencies]
+# Pinned exactly: `format::ERROR_RULES` matches fend's error wording, and
+# `engine` and `preprocess` rely on 1.5.8's behaviour. Re-check both when
+# upgrading.
+fend-core = "=1.5.8"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.10"
+serde = { version = "1", features = ["derive"] }
+regex = "1"
+serde_json = "1"
+
+# The operating system's TLS and certificate store on Windows and macOS,
+# where there is one to count on; rustls with its own roots elsewhere.
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["json", "native-tls"] }
+
+[target.'cfg(not(any(target_os = "windows", target_os = "macos")))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["json", "rustls"] }

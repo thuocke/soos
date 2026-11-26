@@ -1,0 +1,1184 @@
+//! Turns a [`LineResult`] into what the app's result column shows and
+//! soos-cli prints: currency symbols and rounding, thousands separators,
+//! short error labels.
+
+use std::sync::LazyLock;
+
+use regex::{Captures, Regex};
+
+use crate::highlight::{tokens, TokenKind};
+use crate::LineResult;
+
+/// Shown in place of fend's `"approx. "` prefix.
+pub(crate) const APPROX: &str = "\u{2248} ";
+
+/// fend's prefix for an inexact result.
+pub(crate) const FEND_APPROX: &str = "approx. ";
+
+pub(crate) fn approx_symbol(display: &str) -> String {
+    display
+        .strip_prefix(FEND_APPROX)
+        .map_or_else(|| display.to_string(), |rest| format!("{APPROX}{rest}"))
+}
+
+/// One line's result as the app shows it and soos-cli prints it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shown {
+    /// The result as displayed, or an error's short label.
+    pub text: String,
+    /// What clicking the result copies: no thousands separators and no `≈`,
+    /// so it reads back into Soos as the same value. For an error, the short
+    /// label.
+    pub copy: String,
+    /// An error's full message (the app's hover text).
+    pub error: Option<String>,
+    /// Every digit of a value `text` shows rounded (the app's hover text).
+    pub full: Option<String>,
+}
+
+impl Shown {
+    /// The same result with `.` and `,` swapped in its numbers, for the
+    /// decimal-comma setting. An error is left as it is: its text is words.
+    pub fn swapped(self) -> Shown {
+        if self.error.is_some() {
+            return self;
+        }
+        Shown {
+            text: swap_separators(&self.text),
+            copy: swap_separators(&self.copy),
+            error: None,
+            full: self.full.map(|full| swap_separators(&full)),
+        }
+    }
+}
+
+/// `.` and `,` swapped inside every number of `text` (`1,234.5` and
+/// `1.234,5`), for the decimal-comma setting. Only a `.` or `,` between
+/// digits is a number's, so `November 15, 2027` keeps its comma. It is its
+/// own inverse: the same call reads what the user types and shows what the
+/// engine prints.
+pub fn swap_separators(text: &str) -> String {
+    static NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d+(?:[.,]\d+)+").unwrap());
+    NUMBER
+        .replace_all(text, |caps: &Captures| {
+            caps[0]
+                .chars()
+                .map(|c| match c {
+                    '.' => ',',
+                    ',' => '.',
+                    other => other,
+                })
+                .collect::<String>()
+        })
+        .into_owned()
+}
+
+/// Decimals an inexact result is shown with -- after any leading zeros of
+/// a number below 1, so `≈ 0.0000123457` keeps its digits too. fend gives
+/// 10, which is noise for `≈ 11.0231131092 lbs`.
+const INEXACT_DECIMALS: usize = 4;
+
+/// Format one [`LineResult`]; `None` for a line with nothing to show.
+/// `high_precision` keeps every digit instead of rounding a currency amount
+/// to its usual decimals and an inexact result to [`INEXACT_DECIMALS`].
+pub fn shown(result: &LineResult, high_precision: bool) -> Option<Shown> {
+    match result {
+        LineResult::Value(value) => {
+            if let Some(money) = Money::parse(value, high_precision) {
+                return Some(Shown {
+                    text: money.render(true),
+                    copy: money.render(false),
+                    error: None,
+                    full: None,
+                });
+            }
+            let rounded = if high_precision {
+                None
+            } else {
+                round_inexact(value)
+            };
+            Some(Shown {
+                text: group_digits(rounded.as_deref().unwrap_or(value)),
+                copy: value.strip_prefix(APPROX).unwrap_or(value).to_string(),
+                error: None,
+                full: rounded.map(|_| group_digits(value)),
+            })
+        }
+        LineResult::Date(date) => Some(Shown {
+            text: date.clone(),
+            copy: date.clone(),
+            error: None,
+            full: None,
+        }),
+        LineResult::Error(error) => {
+            let short = error.short();
+            Some(Shown {
+                text: short.clone(),
+                copy: short,
+                error: Some(error.to_string()),
+                full: None,
+            })
+        }
+        LineResult::Blank | LineResult::Header | LineResult::Label => None,
+    }
+}
+
+/// One line's result, ready for a result column. Its text is painted as
+/// is, flush against the column's right edge: padding it to line decimal
+/// points up would pull some results off that edge.
+pub struct Cell {
+    pub shown: Shown,
+    /// A `sum` or `avg` line, drawn bold.
+    pub total: bool,
+}
+
+/// A line whose result is a total: `sum`, `total`, `avg` or `average`.
+pub fn is_total(line: &str) -> bool {
+    tokens(line).into_iter().any(|(range, kind)| {
+        kind == TokenKind::Keyword
+            && ["sum", "total", "avg", "average"]
+                .iter()
+                .any(|word| line[range.clone()].eq_ignore_ascii_case(word))
+    })
+}
+
+/// A cell per line of `text`, `None` where the line shows nothing. With
+/// `decimal_comma`, each result is shown with `.` and `,` swapped. That is
+/// done here, on the way to the screen, so `results` stay in the form the
+/// engine made them and a toggle can't leave them half swapped. soos-app and
+/// the Android app both draw their result column from this.
+pub fn result_cells(
+    text: &str,
+    results: &[LineResult],
+    high_precision: bool,
+    decimal_comma: bool,
+) -> Vec<Option<Cell>> {
+    text.split('\n')
+        .enumerate()
+        .map(|(i, line)| {
+            let shown = shown(results.get(i)?, high_precision)?;
+            Some(Cell {
+                shown: if decimal_comma {
+                    shown.swapped()
+                } else {
+                    shown
+                },
+                total: is_total(line),
+            })
+        })
+        .collect()
+}
+
+/// An inexact result (`≈ ...`) with each decimal rounded half up to
+/// [`INEXACT_DECIMALS`] and trailing zeros dropped; `None` if that changes
+/// nothing. An exact result keeps every digit: `1.609344 km` is the
+/// definition, not noise. A number in another base (`0b0.0101`) is left
+/// as it is.
+fn round_inexact(display: &str) -> Option<String> {
+    let rest = display.strip_prefix(APPROX)?;
+    let chars: Vec<char> = rest.chars().collect();
+    let mut out = String::from(APPROX);
+    let mut changed = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let starts_number = chars[i].is_ascii_digit()
+            && (i == 0 || !(chars[i - 1].is_alphanumeric() || matches!(chars[i - 1], '.' | '#')));
+        if !starts_number {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+            i += 1;
+        }
+        let number: String = chars[start..i].iter().collect();
+        let rounded = number.split_once('.').and_then(|(int_part, frac_part)| {
+            let leading_zeros = if int_part.bytes().all(|b| b == b'0') {
+                frac_part.bytes().take_while(|&b| b == b'0').count()
+            } else {
+                0
+            };
+            let decimals = leading_zeros + INEXACT_DECIMALS;
+            (frac_part.len() > decimals).then(|| round_half_up(&number, decimals))?
+        });
+        match rounded {
+            Some(rounded) => {
+                let trimmed = rounded.trim_end_matches('0').trim_end_matches('.');
+                out.push_str(trimmed);
+                changed = true;
+            }
+            None => out.push_str(&number),
+        }
+    }
+    changed.then_some(out)
+}
+
+/// Insert `,` thousands separators into each integer digit run of four or
+/// more digits (`"1234567 m"` -> `"1,234,567 m"`). A run right after a
+/// letter, digit, `.` or `#` is left alone: a number in another base
+/// (`0x1234`, `3#1012`), an exponent or a fractional part.
+pub(crate) fn group_digits(display: &str) -> String {
+    let chars: Vec<char> = display.chars().collect();
+    let mut out = String::with_capacity(chars.len() + chars.len() / 3);
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars[i].is_ascii_digit() {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+        let run = &chars[start..i];
+        let preceded_by_number_or_word = start > 0
+            && (chars[start - 1].is_alphanumeric() || matches!(chars[start - 1], '.' | '#'));
+        if run.len() >= 4 && !preceded_by_number_or_word {
+            for (j, &c) in run.iter().enumerate() {
+                if j > 0 && (run.len() - j).is_multiple_of(3) {
+                    out.push(',');
+                }
+                out.push(c);
+            }
+        } else {
+            out.extend(run);
+        }
+    }
+    out
+}
+
+/// How one currency is shown. A currency without an entry is shown with its
+/// code after the amount (`12.00 CAD`), see [`Money`].
+pub(crate) struct CurrencyStyle {
+    /// ISO 4217 code, as fend prints it after the amount.
+    pub code: &'static str,
+    pub symbol: &'static str,
+    /// `$5` (true) or `5 ₫` (false).
+    pub symbol_first: bool,
+    /// Decimal places when high precision is off.
+    pub decimals: usize,
+}
+
+const fn style(
+    code: &'static str,
+    symbol: &'static str,
+    symbol_first: bool,
+    decimals: usize,
+) -> CurrencyStyle {
+    CurrencyStyle {
+        code,
+        symbol,
+        symbol_first,
+        decimals,
+    }
+}
+
+/// Every symbol is distinct, so a copied result reads back as the same
+/// currency (`A$150.00` is AUD, not USD) -- [`crate::preprocess`] parses
+/// them from this table. JPY, KRW, VND and IDR have no minor unit in
+/// everyday use.
+pub(crate) const CURRENCY_STYLES: &[CurrencyStyle] = &[
+    style("USD", "$", true, 2),
+    style("EUR", "\u{20ac}", true, 2),
+    style("GBP", "\u{a3}", true, 2),
+    style("JPY", "\u{a5}", true, 0),
+    style("CNY", "CN\u{a5}", true, 2),
+    style("KRW", "\u{20a9}", true, 0),
+    style("INR", "\u{20b9}", true, 2),
+    style("VND", "\u{20ab}", false, 0),
+    style("THB", "\u{e3f}", true, 2),
+    style("PHP", "\u{20b1}", true, 2),
+    style("IDR", "Rp", true, 0),
+    style("MYR", "RM", true, 2),
+    style("SGD", "S$", true, 2),
+    style("AUD", "A$", true, 2),
+];
+
+/// The ISO 4217 codes fend-core 1.5.8 knows as currencies (its own list, in
+/// `units/builtin.rs`) without the code for "no currency", for a code with
+/// no entry in [`CURRENCY_STYLES`].
+/// A unit named in capitals, such as a converter `LAP`, is not one of them.
+const ISO_CODES: &str = "AED AFN ALL AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND \
+BOB BOV BRL BSD BTN BWP BYN BZD CAD CDF CHE CHF CHW CLF CLP CNY COP COU CRC CUC CUP CVE CZK DJF \
+DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP GEL GHS GIP GMD GNF GTQ GYD HKD HNL HRK HTG HUF IDR ILS \
+INR IQD IRR ISK JMD JOD JPY KES KGS KHR KMF KPW KRW KWD KYD KZT LAK LBP LKR LRD LSL LYD MAD MDL \
+MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MXV MYR MZN NAD NGN NIO NOK NPR NZD OMR PAB PEN PGK PHP \
+PKR PLN PYG QAR RON RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP SLE SLL SOS SRD SSP STN SVC SYP SZL \
+THB TJS TMT TND TOP TRY TTD TWD TZS UAH UGX USD USN UYI UYU UYW UZS VED VES VND VUV WST XAF XAG \
+XAU XBA XBB XBC XBD XCD XDR XOF XPD XPF XPT XSU XTS XUA YER ZAR ZMW ZWL";
+
+/// Currencies whose usual amount has no decimals or three. Every other
+/// currency has two.
+const NO_DECIMALS: &[&str] = &[
+    "BIF", "CLP", "DJF", "GNF", "ISK", "KMF", "PYG", "RWF", "UGX", "VUV", "XAF", "XOF", "XPF",
+];
+const THREE_DECIMALS: &[&str] = &["BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"];
+
+/// A fend currency result (`"7.7015644 USD"`, maybe with `≈`), rounded.
+struct Money {
+    approx: bool,
+    negative: bool,
+    /// Unsigned decimal digits, already rounded.
+    amount: String,
+    symbol: String,
+    symbol_first: bool,
+}
+
+impl Money {
+    /// `None` unless `display` is `<number> <currency>`: a code, or fend's
+    /// own `dollars` and `euros`. A code with no entry in [`CURRENCY_STYLES`]
+    /// keeps its code after the amount.
+    fn parse(display: &str, high_precision: bool) -> Option<Money> {
+        let (approx, rest) = match display.strip_prefix(APPROX) {
+            Some(rest) => (true, rest),
+            None => (false, display),
+        };
+        let (amount, name) = rest.rsplit_once(' ')?;
+        let code = match name {
+            "dollar" | "dollars" => "USD",
+            "euro" | "euros" => "EUR",
+            other => other,
+        };
+        let (symbol, symbol_first, decimals) = match CURRENCY_STYLES.iter().find(|s| s.code == code)
+        {
+            Some(style) => (style.symbol.to_string(), style.symbol_first, style.decimals),
+            None if ISO_CODES.split(' ').any(|iso| iso == code) => {
+                let decimals = if NO_DECIMALS.contains(&code) {
+                    0
+                } else if THREE_DECIMALS.contains(&code) {
+                    3
+                } else {
+                    2
+                };
+                (name.to_string(), false, decimals)
+            }
+            None => return None,
+        };
+        let (negative, digits) = match amount.strip_prefix('-') {
+            Some(digits) => (true, digits),
+            None => (false, amount),
+        };
+        let amount = if high_precision {
+            is_decimal(digits).then(|| digits.to_string())?
+        } else {
+            round_half_up(digits, decimals)?
+        };
+        // Rounding -0.001 gives 0.00, not -0.00.
+        let negative = negative && amount.bytes().any(|b| matches!(b, b'1'..=b'9'));
+        Some(Money {
+            approx,
+            negative,
+            amount,
+            symbol,
+            symbol_first,
+        })
+    }
+
+    /// For display: with `≈` and thousands separators. Otherwise the plain
+    /// form Soos reads back.
+    fn render(&self, for_display: bool) -> String {
+        let amount = if for_display {
+            group_digits(&self.amount)
+        } else {
+            self.amount.clone()
+        };
+        let sign = if self.negative { "-" } else { "" };
+        let symbol = &self.symbol;
+        let body = if self.symbol_first {
+            format!("{sign}{symbol}{amount}")
+        } else {
+            format!("{sign}{amount} {symbol}")
+        };
+        if self.approx && for_display {
+            format!("{APPROX}{body}")
+        } else {
+            body
+        }
+    }
+}
+
+fn is_decimal(s: &str) -> bool {
+    let (int_part, frac_part) = s.split_once('.').unwrap_or((s, ""));
+    !int_part.is_empty()
+        && int_part.bytes().all(|b| b.is_ascii_digit())
+        && frac_part.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// `digits` rounded half up to `decimals` places, on the decimal text:
+/// going through `f64` rounds 1.005 down and loses digits past 2^53.
+/// `None` if `digits` isn't a plain unsigned decimal.
+fn round_half_up(digits: &str, decimals: usize) -> Option<String> {
+    if !is_decimal(digits) {
+        return None;
+    }
+    let (int_part, frac_part) = digits.split_once('.').unwrap_or((digits, ""));
+    let mut kept: Vec<u8> = int_part
+        .bytes()
+        .chain(
+            frac_part
+                .bytes()
+                .chain(std::iter::repeat(b'0'))
+                .take(decimals),
+        )
+        .collect();
+    if frac_part
+        .as_bytes()
+        .get(decimals)
+        .is_some_and(|&d| d >= b'5')
+    {
+        let mut i = kept.len();
+        loop {
+            if i == 0 {
+                kept.insert(0, b'1');
+                break;
+            }
+            i -= 1;
+            if kept[i] == b'9' {
+                kept[i] = b'0';
+            } else {
+                kept[i] += 1;
+                break;
+            }
+        }
+    }
+    let (int_digits, frac_digits) = kept.split_at(kept.len() - decimals);
+    let mut out = String::from_utf8(int_digits.to_vec()).ok()?;
+    if decimals > 0 {
+        out.push('.');
+        out.push_str(std::str::from_utf8(frac_digits).ok()?);
+    }
+    Some(out)
+}
+
+/// The label for fend refusing to mix units. [`crate::LineError::is_unit_mismatch`]
+/// tests for it, so it is named once.
+pub(crate) const UNIT_MISMATCH: &str = "unit mismatch";
+
+/// (needle, short label): the first needle a message contains picks its
+/// label. The needles are fend-core 1.5.8's wording, which is why
+/// `Cargo.toml` pins that version exactly. Variants a user couldn't tell
+/// apart share a label. Soos's own messages aren't here: each carries its
+/// label (see [`crate::LineError::own`]).
+const ERROR_RULES: &[(&str, &str)] = &[
+    // fend wraps these as "failed to retrieve USD exchange rate: <ours>".
+    ("no exchange rates downloaded yet", "no rates yet"),
+    ("no exchange rate cached for", "no rate"),
+    // Also what `sum` over two units gives, so not "can't convert".
+    ("cannot convert from", UNIT_MISMATCH),
+    ("found '", "syntax error"),
+    ("expected an object", "syntax error"),
+    ("found an invalid token", "syntax error"),
+    ("expected a value, instead found", "syntax error"),
+    ("unexpected character", "syntax error"),
+    ("beginning of an identifier", "syntax error"),
+    ("digit separator", "syntax error"), // covers singular and plural forms
+    ("escape sequence", "syntax error"), // unknown/invalid/out-of-range, all three
+    ("uppercase letter, or one of", "syntax error"),
+    ("unterminated string literal", "unclosed quote"),
+    ("is not a function", "not a function"),
+    ("unable to parse a valid base prefix", "invalid number"),
+    ("expected a rational number", "invalid number"),
+    ("expected a real number", "invalid number"),
+    ("expected a unitless number", "no unit expected"),
+    ("string cannot be longer than one codepoint", "too long"),
+    ("string cannot be empty", "empty string"),
+    ("base must be at least", "invalid base"),
+    ("base cannot be larger than", "invalid base"),
+    ("unable to convert number to a valid base", "invalid base"),
+    ("Expected a date literal", "invalid date"),
+    ("to a date", "invalid date"), // ParseDateError: "failed to convert '...' to a date"
+    ("does not exist, did you mean", "invalid date"), // e.g. February 30th
+    (
+        "you need to specify what number of decimal places",
+        "specify digits",
+    ),
+    (
+        "you need to specify what number of significant figures",
+        "specify digits",
+    ),
+    ("must lie in the interval", "out of range"),
+    ("division by zero", "\u{f7} by 0"),
+    ("modulo by zero", "mod by 0"),
+    ("exponent too large", "too large"),
+    ("value is too large", "too large"),
+    ("zero to the power of zero is undefined", "undefined"),
+    ("negative numbers are not allowed", "no negatives"),
+    (
+        "roots of negative numbers are not supported",
+        "no complex roots",
+    ),
+    (
+        "cannot compute non-integer or negative roots",
+        "invalid root",
+    ),
+    ("cannot convert fraction to integer", "not an integer"),
+    ("number cannot be converted to an integer", "not an integer"),
+    ("cannot convert complex number to integer", "not an integer"),
+    ("cannot convert inexact number to integer", "not an integer"),
+    // What `engine`'s per-line deadline produces.
+    ("interrupted", "too complex"),
+];
+
+/// `unknown metr`: the unknown name is the useful part, so it's kept (up to
+/// 12 characters).
+fn unknown_identifier_short(error: &str) -> Option<String> {
+    let name = error
+        .strip_prefix("unknown identifier '")?
+        .strip_suffix('\'')?;
+    Some(format!(
+        "unknown {}",
+        name.chars().take(12).collect::<String>()
+    ))
+}
+
+/// A short label for the result column; the full message stays in
+/// [`Shown::error`]. A message no rule matches is kept if it's 20
+/// characters or shorter, and otherwise becomes "can't compute".
+pub(crate) fn shorten_error(error: &str) -> String {
+    if let Some(short) = unknown_identifier_short(error) {
+        return short;
+    }
+    if let Some((_, code)) = ERROR_RULES
+        .iter()
+        .find(|(needle, _)| error.contains(needle))
+    {
+        return code.to_string();
+    }
+    if error.chars().count() > 20 {
+        "can't compute".to_string()
+    } else {
+        error.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::LineError;
+
+    #[test]
+    fn shown_value_groups_for_display_but_copies_plain() {
+        let shown = shown(&LineResult::Value("1234567.891 USD".into()), false).unwrap();
+        assert_eq!(shown.text, "$1,234,567.89");
+        assert_eq!(shown.copy, "$1234567.89");
+        assert_eq!(shown.error, None);
+    }
+
+    #[test]
+    fn shown_error_is_the_short_label_with_the_full_message_kept() {
+        let raw = "unknown identifier 'metr'";
+        let shown = shown(&LineResult::Error(LineError::Fend(raw.into())), false).unwrap();
+        assert_eq!(shown.text, "unknown metr");
+        assert_eq!(shown.copy, "unknown metr");
+        assert_eq!(shown.error.as_deref(), Some(raw));
+    }
+
+    #[test]
+    fn swap_separators_swaps_inside_numbers_only() {
+        for (point, comma) in [
+            ("1,234.5", "1.234,5"),
+            ("3,000,000", "3.000.000"),
+            ("$1,234.50", "$1.234,50"),
+            ("\u{2248} 1,234.5678 m", "\u{2248} 1.234,5678 m"),
+            ("1.5e3", "1,5e3"),
+            ("2 + 3.5", "2 + 3,5"),
+        ] {
+            assert_eq!(swap_separators(point), comma);
+            assert_eq!(swap_separators(comma), point, "and back");
+        }
+        for plain in [
+            "1234",
+            "5 m",
+            "November 15, 2027",
+            "Friday, 25 December 2026",
+            "a.b",
+        ] {
+            assert_eq!(swap_separators(plain), plain);
+        }
+    }
+
+    /// A swapped result copies in the form the same setting reads back.
+    #[test]
+    fn swapped_shown_swaps_the_text_the_copy_and_the_hover_but_not_an_error() {
+        let money = shown_value("1234567.891 USD").swapped();
+        assert_eq!(money.text, "$1.234.567,89");
+        assert_eq!(money.copy, "$1234567,89");
+
+        let inexact = shown_value("\u{2248} 1234.56789 m").swapped();
+        assert_eq!(inexact.text, "\u{2248} 1.234,5679 m");
+        assert_eq!(inexact.full.as_deref(), Some("\u{2248} 1.234,56789 m"));
+
+        let error = shown(
+            &LineResult::Error(LineError::Fend("5.5 is 3,000 too many".into())),
+            false,
+        )
+        .unwrap();
+        assert_eq!(error.clone().swapped(), error);
+    }
+
+    fn shown_value(value: &str) -> Shown {
+        shown(&LineResult::Value(value.into()), false).unwrap()
+    }
+
+    #[test]
+    fn shown_nothing_for_lines_without_a_result() {
+        for line in [LineResult::Blank, LineResult::Header, LineResult::Label] {
+            assert_eq!(shown(&line, false), None);
+        }
+    }
+
+    #[test]
+    fn approx_symbol_replaces_prefix() {
+        assert_eq!(approx_symbol("approx. 3.14"), "\u{2248} 3.14");
+        assert_eq!(approx_symbol("42"), "42");
+    }
+
+    #[test]
+    fn group_digits_groups_plain_integers() {
+        assert_eq!(group_digits("1234567"), "1,234,567");
+        assert_eq!(group_digits("1000"), "1,000");
+        assert_eq!(group_digits("-1234567"), "-1,234,567");
+        // Under the 4-digit threshold: left alone.
+        assert_eq!(group_digits("999"), "999");
+    }
+
+    #[test]
+    fn group_digits_only_groups_the_integer_part() {
+        assert_eq!(group_digits("1234567.89"), "1,234,567.89");
+        // A long fractional run stays ungrouped even though it's 4+ digits.
+        assert_eq!(group_digits("1.123456789"), "1.123456789");
+    }
+
+    #[test]
+    fn group_digits_leaves_currency_symbol_and_unit_suffix_alone() {
+        assert_eq!(group_digits("$1234567.89"), "$1,234,567.89");
+        assert_eq!(group_digits("1234567 m"), "1,234,567 m");
+        assert_eq!(group_digits("\u{2248} 1234567.5"), "\u{2248} 1,234,567.5");
+    }
+
+    #[test]
+    fn group_digits_skips_hex_and_exponents() {
+        assert_eq!(group_digits("0x12345"), "0x12345");
+        assert_eq!(group_digits("1.5e12345"), "1.5e12345");
+        assert_eq!(group_digits("3#100110"), "3#100110");
+    }
+
+    /// An inexact result shows four decimals; every digit stays in `copy`
+    /// and `full`.
+    #[test]
+    fn inexact_results_are_rounded_for_display_only() {
+        let rounded = shown(
+            &LineResult::Value("\u{2248} 11.0231131092 lbs".into()),
+            false,
+        )
+        .unwrap();
+        assert_eq!(rounded.text, "\u{2248} 11.0231 lbs");
+        assert_eq!(rounded.copy, "11.0231131092 lbs");
+        assert_eq!(rounded.full.as_deref(), Some("\u{2248} 11.0231131092 lbs"));
+
+        let precise = shown(
+            &LineResult::Value("\u{2248} 11.0231131092 lbs".into()),
+            true,
+        )
+        .unwrap();
+        assert_eq!(precise.text, "\u{2248} 11.0231131092 lbs");
+        assert_eq!(precise.full, None);
+    }
+
+    #[test]
+    fn round_inexact_keeps_small_numbers_and_exact_results() {
+        assert_eq!(
+            round_inexact("\u{2248} 0.0000123456").as_deref(),
+            Some("\u{2248} 0.00001235")
+        );
+        assert_eq!(
+            round_inexact("\u{2248} 1.9999999999").as_deref(),
+            Some("\u{2248} 2")
+        );
+        assert_eq!(
+            round_inexact("\u{2248} -0.988031625").as_deref(),
+            Some("\u{2248} -0.988")
+        );
+        assert_eq!(round_inexact("\u{2248} 0b0.0101010101"), None);
+        assert_eq!(round_inexact("\u{2248} 3.14"), None);
+        assert_eq!(round_inexact("1.609344 km"), None);
+    }
+
+    /// `(text, copy)` for a value line.
+    fn money(value: &str, high_precision: bool) -> (String, String) {
+        let shown = shown(&LineResult::Value(value.into()), high_precision).unwrap();
+        (shown.text, shown.copy)
+    }
+
+    fn pair(text: &str, copy: &str) -> (String, String) {
+        (text.to_string(), copy.to_string())
+    }
+
+    #[test]
+    fn currency_rounds_to_its_usual_decimals_unless_high_precision() {
+        assert_eq!(money("7.7015644 USD", false), pair("$7.70", "$7.70"));
+        assert_eq!(
+            money("7.7015644 USD", true),
+            pair("$7.7015644", "$7.7015644")
+        );
+        assert_eq!(
+            money("25861.6232982940 VND", false),
+            pair("25,862 \u{20ab}", "25862 \u{20ab}")
+        );
+        assert_eq!(
+            money("1500.7 KRW", false),
+            pair("\u{20a9}1,501", "\u{20a9}1501")
+        );
+    }
+
+    #[test]
+    fn currency_rounds_half_up_on_the_decimal_digits() {
+        assert_eq!(money("1.005 USD", false).0, "$1.01");
+        assert_eq!(money("2.675 USD", false).0, "$2.68");
+        assert_eq!(money("0.125 USD", false).0, "$0.13");
+        assert_eq!(money("0.124 USD", false).0, "$0.12");
+        assert_eq!(money("9.995 USD", false).0, "$10.00");
+        assert_eq!(money("999.5 JPY", false).0, "\u{a5}1,000");
+        assert_eq!(
+            money("12345678901234567.89 USD", false).0,
+            "$12,345,678,901,234,567.89"
+        );
+    }
+
+    #[test]
+    fn negative_amounts_put_the_sign_before_the_symbol() {
+        assert_eq!(money("-5.5 USD", false), pair("-$5.50", "-$5.50"));
+        assert_eq!(money("-1234 VND", false).0, "-1,234 \u{20ab}");
+        assert_eq!(money("-0.001 USD", false).0, "$0.00");
+    }
+
+    #[test]
+    fn currencies_that_share_a_sign_elsewhere_get_distinct_symbols() {
+        assert_eq!(money("150 AUD", false).0, "A$150.00");
+        assert_eq!(money("150 SGD", false).0, "S$150.00");
+        assert_eq!(money("780 CNY", false).0, "CN\u{a5}780.00");
+        assert_eq!(money("1500 JPY", false).0, "\u{a5}1,500");
+        assert_eq!(money("1500000 IDR", false).0, "Rp1,500,000");
+        let mut symbols: Vec<&str> = CURRENCY_STYLES.iter().map(|s| s.symbol).collect();
+        symbols.sort_unstable();
+        symbols.dedup();
+        assert_eq!(symbols.len(), CURRENCY_STYLES.len());
+    }
+
+    #[test]
+    fn approx_shows_but_is_not_copied() {
+        assert_eq!(
+            money("\u{2248} 7.7015644 USD", false),
+            pair("\u{2248} $7.70", "$7.70")
+        );
+        assert_eq!(
+            money("\u{2248} 1234.5678", false),
+            pair("\u{2248} 1,234.5678", "1234.5678")
+        );
+    }
+
+    #[test]
+    fn a_currency_without_a_symbol_rounds_and_keeps_its_code() {
+        assert_eq!(money("12.345 CAD", false), pair("12.35 CAD", "12.35 CAD"));
+        assert_eq!(money("5.5555 KWD", false), pair("5.556 KWD", "5.556 KWD"));
+        assert_eq!(money("5.5 ISK", false), pair("6 ISK", "6 ISK"));
+        assert_eq!(
+            money("1234.5 CHF", false),
+            pair("1,234.50 CHF", "1234.50 CHF")
+        );
+        assert_eq!(money("5.555 dollars", false), pair("$5.56", "$5.56"));
+        assert_eq!(money("2 euro", false), pair("\u{20ac}2.00", "\u{20ac}2.00"));
+        assert_eq!(money("12.345 CAD", true), pair("12.345 CAD", "12.345 CAD"));
+    }
+
+    #[test]
+    fn non_currency_values_pass_through() {
+        assert_eq!(money("50.8 cm", false), pair("50.8 cm", "50.8 cm"));
+        assert_eq!(money("5 btu", false), pair("5 btu", "5 btu"));
+        // A converter named in capitals is not a currency.
+        assert_eq!(money("1.2345 LAP", false), pair("1.2345 LAP", "1.2345 LAP"));
+        assert_eq!(money("1e999 USD", false).0, "1e999 USD");
+    }
+
+    #[test]
+    fn dates_are_shown_as_is() {
+        let date = LineResult::Date("Friday, 25 December 2026".into());
+        assert_eq!(
+            shown(&date, false).unwrap().text,
+            "Friday, 25 December 2026"
+        );
+    }
+
+    #[test]
+    fn shorten_error_collapses_currency_message() {
+        assert_eq!(
+            shorten_error("failed to retrieve VND exchange rate: no exchange rate cached for VND"),
+            "no rate"
+        );
+        assert_eq!(
+            shorten_error("failed to retrieve USD exchange rate: no exchange rates downloaded yet"),
+            "no rates yet"
+        );
+        assert_eq!(shorten_error("1 +"), "1 +");
+    }
+
+    #[test]
+    fn shorten_error_incompatible_units() {
+        assert_eq!(
+            shorten_error(
+                "cannot convert from m to kg: units 'meter' and 'kilogram' are incompatible"
+            ),
+            "unit mismatch"
+        );
+        // Including fend's internal BASE_CURRENCY name.
+        assert_eq!(
+            shorten_error(
+                "cannot convert from m to USD: units 'meter' and 'BASE_CURRENCY' are incompatible"
+            ),
+            "unit mismatch"
+        );
+    }
+
+    #[test]
+    fn shorten_error_unknown_identifier_keeps_the_name() {
+        assert_eq!(shorten_error("unknown identifier 'xyz'"), "unknown xyz");
+        assert_eq!(
+            shorten_error("unknown identifier 'a_very_long_mistyped_name'"),
+            "unknown a_very_long_"
+        );
+    }
+
+    /// Soos's own messages carry their labels (see [`crate::LineError::own`]), so each
+    /// is reached by a line that makes it, not by feeding its text to the
+    /// table of fend's wording.
+    #[test]
+    fn soos_own_errors_show_their_labels() {
+        let too_long_block = format!("{}sum", "12\n".repeat(400));
+        let long_line = "1+".repeat(3000);
+        let too_nested = format!("{}1", "(".repeat(65));
+        for (document, label) in [
+            ("1 +\nsum", "error on line 1"),
+            ("total = 5", "reserved name"),
+            ("m = 5", "name in use"),
+            ("x = 2\nx on 10", "not a percent"),
+            ("50%\n10\nsum", "percent in block"),
+            ("avg", "nothing to average"),
+            ("15% + $100", "needs on or off"),
+            ("ans", "not a number"),
+            (too_long_block.as_str(), "too many lines"),
+            (long_line.as_str(), "too long"),
+            (too_nested.as_str(), "too nested"),
+            ("2026-12-25", "date needs @"),
+            ("tomorrow + 2 hours", "no time of day"),
+            ("3PM + 2", "needs a unit"),
+            ("3PM * 2", "unsupported time"),
+            ("now * 2", "unsupported date"),
+            ("2 days before blah", "invalid date"),
+            ("today + 999999999999999999 days", "date out of range"),
+            ("99:99PM", "not a time of day"),
+            ("2 before 3", "needs a date"),
+        ] {
+            let rates = crate::currency::RateSource::with_rates(&[]);
+            let (_, results) = crate::recalc_document(document, &[], &rates);
+            let last = shown(results.last().unwrap(), false).unwrap();
+            assert_eq!(last.text, label, "{document:.40}");
+            assert!(last.error.is_some(), "{document:.40}");
+        }
+    }
+
+    #[test]
+    fn shorten_error_syntax_error() {
+        assert_eq!(
+            shorten_error("found ')' while expecting '('"),
+            "syntax error"
+        );
+        assert_eq!(
+            shorten_error("found an invalid token while expecting ')'"),
+            "syntax error"
+        );
+        assert_eq!(
+            shorten_error("expected a value, instead found ')'"),
+            "syntax error"
+        );
+    }
+
+    #[test]
+    fn shorten_error_base_prefix() {
+        assert_eq!(
+            shorten_error("unable to parse a valid base prefix, expected 0b, 0o, or 0x"),
+            "invalid number"
+        );
+    }
+
+    #[test]
+    fn shorten_error_decimal_places_and_sig_figs() {
+        assert_eq!(
+            shorten_error("you need to specify what number of decimal places to use, e.g. '10 dp'"),
+            "specify digits"
+        );
+        assert_eq!(
+            shorten_error(
+                "you need to specify what number of significant figures to use, e.g. '10 sf'"
+            ),
+            "specify digits"
+        );
+    }
+
+    #[test]
+    fn shorten_error_not_a_function() {
+        assert_eq!(shorten_error("'foo' is not a function"), "not a function");
+        assert_eq!(
+            shorten_error("'foo' is not a function or number"),
+            "not a function"
+        );
+    }
+
+    #[test]
+    fn shorten_error_date_literal() {
+        assert_eq!(
+            shorten_error("Expected a date literal, e.g. @1970-01-01"),
+            "invalid date"
+        );
+    }
+
+    #[test]
+    fn shorten_error_out_of_range() {
+        assert_eq!(
+            shorten_error("5 must lie in the interval [0, 4]"),
+            "out of range"
+        );
+    }
+
+    #[test]
+    fn shorten_error_leaves_already_short_messages_untouched() {
+        assert_eq!(shorten_error("1 +"), "1 +");
+    }
+
+    #[test]
+    fn shorten_error_division_and_modulo_by_zero() {
+        assert_eq!(shorten_error("division by zero"), "\u{f7} by 0");
+        assert_eq!(shorten_error("modulo by zero"), "mod by 0");
+    }
+
+    #[test]
+    fn shorten_error_interrupted_reads_as_too_complex() {
+        assert_eq!(shorten_error("interrupted"), "too complex");
+    }
+
+    #[test]
+    fn shorten_error_too_large_and_undefined() {
+        assert_eq!(shorten_error("exponent too large"), "too large");
+        assert_eq!(shorten_error("value is too large"), "too large");
+        assert_eq!(
+            shorten_error("zero to the power of zero is undefined"),
+            "undefined"
+        );
+    }
+
+    #[test]
+    fn shorten_error_negative_and_complex_roots() {
+        assert_eq!(
+            shorten_error("negative numbers are not allowed"),
+            "no negatives"
+        );
+        assert_eq!(
+            shorten_error("roots of negative numbers are not supported"),
+            "no complex roots"
+        );
+        assert_eq!(
+            shorten_error("cannot compute non-integer or negative roots"),
+            "invalid root"
+        );
+    }
+
+    #[test]
+    fn shorten_error_integer_conversion_variants_share_one_label() {
+        for msg in [
+            "cannot convert fraction to integer",
+            "number cannot be converted to an integer",
+            "cannot convert complex number to integer",
+            "cannot convert inexact number to integer",
+        ] {
+            assert_eq!(shorten_error(msg), "not an integer");
+        }
+    }
+
+    #[test]
+    fn shorten_error_expected_number_variants_share_invalid_number() {
+        assert_eq!(
+            shorten_error("expected a rational number"),
+            "invalid number"
+        );
+        assert_eq!(shorten_error("expected a real number"), "invalid number");
+        assert_eq!(
+            shorten_error("expected a unitless number"),
+            "no unit expected"
+        );
+    }
+
+    #[test]
+    fn shorten_error_string_and_base_variants() {
+        assert_eq!(
+            shorten_error("string cannot be longer than one codepoint"),
+            "too long"
+        );
+        assert_eq!(shorten_error("string cannot be empty"), "empty string");
+        assert_eq!(
+            shorten_error("unterminated string literal"),
+            "unclosed quote"
+        );
+        assert_eq!(shorten_error("base must be at least 2"), "invalid base");
+        assert_eq!(
+            shorten_error("base cannot be larger than 36"),
+            "invalid base"
+        );
+        assert_eq!(
+            shorten_error("unable to convert number to a valid base"),
+            "invalid base"
+        );
+    }
+
+    #[test]
+    fn shorten_error_date_variants_share_invalid_date() {
+        assert_eq!(
+            shorten_error("Expected a date literal, e.g. @1970-01-01"),
+            "invalid date"
+        );
+        assert_eq!(
+            shorten_error("failed to convert 'xyz' to a date"),
+            "invalid date"
+        );
+        assert_eq!(
+            shorten_error("February 30, 2026 does not exist, did you mean March 1 or March 2?"),
+            "invalid date"
+        );
+    }
+
+    #[test]
+    fn shorten_error_misc_syntax_variants_share_syntax_error() {
+        for msg in [
+            "unexpected character '$'",
+            "'#' is not valid at the beginning of an identifier",
+            "digit separators are not allowed",
+            "digit separators can only occur between digits",
+            "expected a digit separator, found 'x'",
+            "unknown escape sequence: \\q",
+            "expected an escape sequence between \\x00 and \\x7f",
+            "invalid Unicode escape sequence, expected e.g. \\u{7e}",
+            "expected an uppercase letter, or one of @[\\]^_? (e.g. \\^H or \\^@)",
+        ] {
+            assert_eq!(shorten_error(msg), "syntax error");
+        }
+    }
+
+    #[test]
+    fn shorten_error_unmatched_long_message_falls_back_to_cant_compute() {
+        assert_eq!(
+            shorten_error("zero cannot be represented as a roman numeral"),
+            "can't compute"
+        );
+        assert_eq!(
+            shorten_error("invalid dice syntax, try e.g. `4d6`"),
+            "can't compute"
+        );
+    }
+
+    fn value(s: &str) -> LineResult {
+        LineResult::Value(s.to_owned())
+    }
+
+    fn texts(text: &str, results: &[LineResult]) -> Vec<Option<String>> {
+        texts_with(text, results, false)
+    }
+
+    fn texts_with(text: &str, results: &[LineResult], decimal_comma: bool) -> Vec<Option<String>> {
+        result_cells(text, results, false, decimal_comma)
+            .into_iter()
+            .map(|cell| cell.map(|cell| cell.shown.text))
+            .collect()
+    }
+
+    /// Swapped on the way to the screen: dates and errors are left alone.
+    #[test]
+    fn the_decimal_comma_swaps_values_and_leaves_dates_and_errors() {
+        let text = "a\nb\nc\nd";
+        let results = [
+            value("1234567.5 USD"),
+            value("1234.5 m"),
+            LineResult::Date("Friday, 25 December 2026".to_owned()),
+            LineResult::Error("unknown identifier 'x.5'".to_owned().into()),
+        ];
+        assert_eq!(
+            texts_with(text, &results, true),
+            [
+                Some("$1.234.567,50".to_owned()),
+                Some("1.234,5 m".to_owned()),
+                Some("Friday, 25 December 2026".to_owned()),
+                Some("unknown x.5".to_owned()),
+            ]
+        );
+        assert_eq!(
+            texts_with(text, &results, false)[1].as_deref(),
+            Some("1,234.5 m")
+        );
+    }
+
+    /// Every result is painted as it's formatted, with no padding to line
+    /// up decimal points, so `\u{a5}21,000`, `15` and `500` all end on the
+    /// column's right edge.
+    #[test]
+    fn results_are_not_padded_so_they_end_on_the_right_edge() {
+        let text = "a\nb\nc\nd\ne\nf";
+        let results = [
+            value("1680 USD"),
+            value("21000 JPY"),
+            value("\u{2248} 11.0231131092 lbs"),
+            value("15"),
+            value("500"),
+            value("180.34 cm"),
+        ];
+        assert_eq!(
+            texts(text, &results),
+            [
+                Some("$1,680.00".to_owned()),
+                Some("\u{a5}21,000".to_owned()),
+                Some("\u{2248} 11.0231 lbs".to_owned()),
+                Some("15".to_owned()),
+                Some("500".to_owned()),
+                Some("180.34 cm".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_line_without_a_result_has_no_cell() {
+        let text = "a\nb\n\nc\nd";
+        let results = [
+            value("1.5"),
+            LineResult::Error("unknown identifier 'x'".to_owned().into()),
+            LineResult::Blank,
+            value("100"),
+            LineResult::Date("Wednesday, 30 September 2026".to_owned()),
+        ];
+        assert_eq!(
+            texts(text, &results),
+            [
+                Some("1.5".to_owned()),
+                Some("unknown x".to_owned()),
+                None,
+                Some("100".to_owned()),
+                Some("Wednesday, 30 September 2026".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn totals_are_sum_and_avg_lines() {
+        assert!(is_total("sum"));
+        assert!(is_total("Total: avg in EUR"));
+        assert!(!is_total("prev + 1"));
+        assert!(!is_total("// sum"));
+    }
+}
