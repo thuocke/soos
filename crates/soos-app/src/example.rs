@@ -4,7 +4,6 @@ use eframe::egui;
 
 use crate::editor::build_layout_job;
 use crate::style::{text_format, Palette};
-use crate::tray::FULL_DESKTOP;
 use crate::window::modal_room;
 
 /// Each line and the result the app shows for it. A fixed list, so the
@@ -69,20 +68,9 @@ pub(crate) const EXAMPLE_LINES: &[(&str, Option<&str>)] = &[
     ),
     ("", None),
     ("# The status bar", None),
-    ("// \u{2194} converters   ? this example", None),
-    // Linux has no ▲ or ⌨; see `FULL_DESKTOP`.
-    if FULL_DESKTOP {
-        ("// \u{25b2} always on top   \u{b1} high precision", None)
-    } else {
-        ("// \u{b1} high precision", None)
-    },
-    ("// 0.1 decimal point or comma", None),
-    if FULL_DESKTOP {
-        ("// \u{25cc} theme   \u{2328} global hotkey", None)
-    } else {
-        ("// \u{25cc} theme", None)
-    },
-    ("// Hover over one for what it does.", None),
+    ("// example   this page", None),
+    ("// 0.1       decimal point or comma", None),
+    ("// settings  theme, digits, your own units", None),
     ("", None),
     ("// Cmd/Ctrl+T new tab, Cmd/Ctrl+W close it,", None),
     ("// Cmd/Ctrl + - 0 zoom the text.", None),

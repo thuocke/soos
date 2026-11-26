@@ -26,7 +26,7 @@ use serde_json::{json, Value};
 use soos_core::currency::RateSource;
 use soos_core::format::{result_cells, swap_separators};
 use soos_core::highlight::{tokens, TokenKind};
-use soos_core::{recalc_document_unless, RawConverter};
+use soos_core::{parse_converters, recalc_document_unless};
 
 static RATES: OnceLock<RateSource> = OnceLock::new();
 
@@ -78,29 +78,27 @@ fn highlight(text: &str) -> Vec<i32> {
 /// Recalculates `text` like the desktop app does, and answers with JSON:
 ///
 /// ```text
-/// {"converters": [{"ok": "..."} | {"error": "..."}],
+/// {"converters": [null | {"ok": "..."} | {"error": "..."}],
 ///  "lines": [null | {"text": "...", "copy": "...", "error": "..." | null,
 ///                    "total": false}]}
 /// ```
 ///
-/// `converters_json` is `RawConverter`s, already trimmed. With
+/// `converters_text` is the converters page as typed, and `converters` in
+/// the answer has one entry per line of it. With
 /// `decimal_comma`, the text and each converter's base and factor are read
 /// with `.` and `,` swapped and the results are swapped back, so the
 /// engine only ever sees `1,234.5`. `None` once `cancelled` says so.
 fn recalc(
     text: &str,
-    converters_json: &str,
+    converters_text: &str,
     high_precision: bool,
     decimal_comma: bool,
     rates: &RateSource,
     cancelled: impl Fn() -> bool + Send + Sync + 'static,
 ) -> Option<String> {
-    // Kotlin writes this itself, so a document that doesn't parse is a bug
-    // there; the lines still calculate, without the converters.
-    let mut converters: Vec<RawConverter> =
-        serde_json::from_str(converters_json).unwrap_or_default();
+    let mut page = parse_converters(converters_text);
     let engine_text = if decimal_comma {
-        for converter in &mut converters {
+        for converter in &mut page.converters {
             converter.base = swap_separators(&converter.base);
             converter.factor = swap_separators(&converter.factor);
         }
@@ -109,14 +107,16 @@ fn recalc(
         text.to_owned()
     };
     let (converter_results, results) =
-        recalc_document_unless(&engine_text, &converters, rates, cancelled)?;
+        recalc_document_unless(&engine_text, &page.converters, rates, cancelled)?;
 
-    let converters: Vec<Value> = converter_results
+    let converters: Vec<Value> = page
+        .statuses(&converter_results)
         .into_iter()
-        .map(|result| match result {
-            Ok(value) if decimal_comma => json!({ "ok": swap_separators(&value) }),
-            Ok(value) => json!({ "ok": value }),
-            Err(error) => json!({ "error": error }),
+        .map(|status| match status {
+            None => Value::Null,
+            Some(Ok(value)) if decimal_comma => json!({ "ok": swap_separators(&value) }),
+            Some(Ok(value)) => json!({ "ok": value }),
+            Some(Err(error)) => json!({ "error": error }),
         })
         .collect();
     let lines: Vec<Value> = result_cells(text, &results, high_precision, decimal_comma)
@@ -165,19 +165,19 @@ pub extern "system" fn Java_io_github_thuocke_soos_Engine_recalc<'l>(
     _class: JClass<'l>,
     generation: jlong,
     text: JString<'l>,
-    converters_json: JString<'l>,
+    converters_text: JString<'l>,
     high_precision: jboolean,
     decimal_comma: jboolean,
 ) -> jstring {
-    let (Some(text), Some(converters_json)) =
-        (read(&mut env, &text), read(&mut env, &converters_json))
+    let (Some(text), Some(converters_text)) =
+        (read(&mut env, &text), read(&mut env, &converters_text))
     else {
         return std::ptr::null_mut();
     };
     let generation = generation as u64;
     recalc(
         &text,
-        &converters_json,
+        &converters_text,
         high_precision == JNI_TRUE,
         decimal_comma == JNI_TRUE,
         rates(),
@@ -298,15 +298,16 @@ mod tests {
 
     #[test]
     fn converters_apply_and_report_their_status() {
-        let converters = r#"[{"unit":"teu","aliases":[],"base":"cbm","factor":"33.2"},
-                            {"unit":"bad","aliases":[],"base":"cbm","factor":"x"}]"#;
+        let converters = "1 teu = 33.2 cbm\n\n1 m = 2 cbm\nteu";
         let doc = run("2 teu in cbm", converters, false);
         assert_eq!(line_text(&doc, 0), "66.4 m^3");
         assert!(doc["converters"][0]["ok"].is_string(), "{doc}");
-        assert!(doc["converters"][1]["error"].is_string(), "{doc}");
+        assert!(doc["converters"][1].is_null(), "{doc}");
+        assert!(doc["converters"][2]["error"].is_string(), "{doc}");
+        assert!(doc["converters"][3]["error"].is_string(), "{doc}");
 
         // A factor typed `33,2` with the decimal comma on is 33.2.
-        let converters = r#"[{"unit":"teu","aliases":[],"base":"cbm","factor":"33,2"}]"#;
+        let converters = "1 teu = 33,2 cbm";
         assert_eq!(
             line_text(&run("2 teu in cbm", converters, true), 0),
             "66,4 m^3"
@@ -315,7 +316,7 @@ mod tests {
 
     #[test]
     fn an_error_carries_its_full_message() {
-        let doc = run("5 metr", "[]", false);
+        let doc = run("5 metr", "", false);
         assert_eq!(line_text(&doc, 0), "unknown metr");
         assert_eq!(doc["lines"][0]["error"], "unknown identifier 'metr'");
     }
@@ -323,11 +324,11 @@ mod tests {
     #[test]
     fn a_cancelled_recalculation_answers_none() {
         let rates = RateSource::with_rates(&[]);
-        assert_eq!(recalc("1 + 1", "[]", false, false, &rates, || true), None);
+        assert_eq!(recalc("1 + 1", "", false, false, &rates, || true), None);
     }
 
     #[test]
     fn unreadable_converters_leave_the_lines_working() {
-        assert_eq!(line_text(&run("1 + 1", "not json", false), 0), "2");
+        assert_eq!(line_text(&run("1 + 1", "not a converter", false), 0), "2");
     }
 }

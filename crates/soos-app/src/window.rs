@@ -1,13 +1,11 @@
 //! Window sizes, and the shared frame for the example and converters
 //! overlays.
 
-use eframe::egui::{self, ViewportCommand};
+use eframe::egui;
 
-use crate::converters::CONVERTERS_GRID_WIDTH;
 use crate::editor::{APP_PADDING, COLUMN_GAP, MIN_GUTTER};
 use crate::example::EXAMPLE_COLUMN;
 use crate::style::{Palette, CHAR_WIDTH};
-use crate::SoosApp;
 
 /// Space between elements inside an overlay.
 pub(crate) const MODAL_GAP: f32 = 12.0;
@@ -19,43 +17,14 @@ pub(crate) const EXAMPLE_MODAL_WIDTH: f32 = 480.0;
 pub(crate) const SETTINGS_MODAL_WIDTH: f32 = 420.0;
 
 /// A scratchpad's width, not an editor's: results stay near the lines they
-/// answer. Fits the example overlay; the window widens for the converters
-/// table while it's open (see [`SoosApp::fit_window_to_overlay`]).
+/// answer. Fits the overlays.
 pub(crate) const DEFAULT_WIDTH: f32 = 560.0;
 pub(crate) const DEFAULT_HEIGHT: f32 = 680.0;
-/// Wide enough for the converters table not to scroll.
-pub(crate) const CONVERTERS_WINDOW_WIDTH: f32 =
-    CONVERTERS_GRID_WIDTH + (MODAL_INNER_MARGIN as f32 + MODAL_WINDOW_MARGIN) * 2.0;
-
 /// A typical line ([`EXAMPLE_COLUMN`] characters) beside the narrowest
 /// result column, plus the scrollbar.
 pub(crate) const MAIN_MIN_WIDTH: f32 =
     APP_PADDING as f32 * 2.0 + CHAR_WIDTH * EXAMPLE_COLUMN as f32 + COLUMN_GAP + MIN_GUTTER + 20.0;
 pub(crate) const MAIN_MIN_HEIGHT: f32 = 480.0;
-
-impl SoosApp {
-    /// Widens the window while the converters table is open, if it's too
-    /// narrow for it, and gives back the old size when the table closes.
-    pub(crate) fn fit_window_to_overlay(&mut self, ctx: &egui::Context) {
-        if !self.show_converters {
-            if let Some(size) = self.size_before_converters.take() {
-                ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
-            }
-            return;
-        }
-        if self.size_before_converters.is_some() {
-            return;
-        }
-        // The content rect, not the viewport's `inner_rect`, which egui
-        // leaves empty where the window's position is unknown (Wayland).
-        let size = ctx.content_rect().size();
-        if size.x < CONVERTERS_WINDOW_WIDTH {
-            self.size_before_converters = Some(size);
-            let wider = egui::vec2(CONVERTERS_WINDOW_WIDTH, size.y);
-            ctx.send_viewport_cmd(ViewportCommand::InnerSize(wider));
-        }
-    }
-}
 
 /// How much of the window an overlay's body may use, after its margins.
 pub(crate) fn modal_room(ctx: &egui::Context) -> egui::Vec2 {

@@ -10,25 +10,6 @@ import org.json.JSONObject
 /** Tabs across the top, as on the desktop. */
 const val MAX_TABS = 9
 
-/** The same as soos-core's `MAX_CONVERTERS`: each costs a define and a check per recalculation. */
-const val MAX_CONVERTERS = 64
-
-/** One row of the converters table, as typed: `unit` = `factor` × `base`. */
-data class ConverterRow(
-    val unit: String = "",
-    /** Comma-separated. */
-    val aliases: String = "",
-    val base: String = "",
-    val factor: String = "",
-) {
-    /** soos-core's `RawConverter`, trimmed and split as the desktop's `to_raw` does. */
-    fun toJson(): JSONObject = JSONObject()
-        .put("unit", unit.trim())
-        .put("aliases", JSONArray(aliases.split(',').map { it.trim() }.filter { it.isNotEmpty() }))
-        .put("base", base.trim())
-        .put("factor", factor.trim())
-}
-
 /** One tab as saved. `id` is never reused, so a closed tab can come back as itself. */
 data class SavedTab(val id: Long, val text: String)
 
@@ -36,7 +17,8 @@ data class SavedTab(val id: Long, val text: String)
 data class Saved(
     val tabs: List<SavedTab> = emptyList(),
     val active: Int = 0,
-    val converters: List<ConverterRow> = emptyList(),
+    /** The converters page, as typed: one converter per line. */
+    val converters: String = "",
     val decimalComma: Boolean = false,
     val highPrecision: Boolean = false,
 )
@@ -49,39 +31,33 @@ fun encode(saved: Saved): String = JSONObject()
         "tabs",
         JSONArray(saved.tabs.map { JSONObject().put("id", it.id).put("text", it.text) }),
     )
-    .put(
-        "converters",
-        JSONArray(
-            saved.converters.map {
-                JSONObject()
-                    .put("unit", it.unit)
-                    .put("aliases", it.aliases)
-                    .put("base", it.base)
-                    .put("factor", it.factor)
-            },
-        ),
-    )
+    .put("convertersText", saved.converters)
     .toString()
+
+/**
+ * The converters table that a save from before the converters page holds,
+ * as the page writes it: `1 unit (aliases) = factor base`, a row per line.
+ */
+private fun tableAsLines(rows: JSONArray?): String = List(rows?.length() ?: 0) {
+    val row = rows!!.getJSONObject(it)
+    val aliases = row.optString("aliases").trim()
+    val names = row.optString("unit").trim() + if (aliases.isEmpty()) "" else " ($aliases)"
+    "1 $names = ${row.optString("factor").trim()} ${row.optString("base").trim()}"
+}.joinToString("\n")
 
 /** `null` if `json` isn't a save at all. */
 fun decode(json: String): Saved? = try {
     val root = JSONObject(json)
     val tabs = root.optJSONArray("tabs")
-    val converters = root.optJSONArray("converters")
     Saved(
         tabs = List(tabs?.length() ?: 0) {
             tabs!!.getJSONObject(it).let { tab -> SavedTab(tab.getLong("id"), tab.getString("text")) }
         },
         active = root.optInt("active", 0),
-        converters = List(converters?.length() ?: 0) {
-            converters!!.getJSONObject(it).let { row ->
-                ConverterRow(
-                    row.optString("unit"),
-                    row.optString("aliases"),
-                    row.optString("base"),
-                    row.optString("factor"),
-                )
-            }
+        converters = if (root.has("convertersText")) {
+            root.getString("convertersText")
+        } else {
+            tableAsLines(root.optJSONArray("converters"))
         },
         decimalComma = root.optBoolean("decimalComma", false),
         highPrecision = root.optBoolean("highPrecision", false),

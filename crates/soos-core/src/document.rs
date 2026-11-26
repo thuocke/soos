@@ -44,6 +44,92 @@ pub struct RawConverter {
     pub factor: String,
 }
 
+/// The left of a converter line: `1 lap`, or `1 lap (laps, lapz)`. The
+/// names are checked later, by [`define_converter`].
+static CONVERTER_NAMES: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^1\s+([^\s(]+)\s*(?:\(([^)]*)\))?$").unwrap());
+
+/// The right of a converter line: an amount (`400`, `1/2.54`, `1e3`), then
+/// the unit it is in.
+static CONVERTER_AMOUNT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^((?:[0-9.,()+*/^ -]|[eE][+-]?[0-9])*)(.*)$").unwrap());
+
+/// What a converter line that can't be read says.
+const CONVERTER_LINE_HINT: &str = "write it like 1 lap = 400 m";
+
+/// The converters page, read: one converter per line, written
+/// `1 lap (laps) = 400 m`. The leading `1` is what tells it from a variable
+/// (`lap = 400 m`). Blank lines and `//` comments are skipped.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct ConverterLines {
+    /// The lines that read as a converter, in order, for the engine.
+    pub converters: Vec<RawConverter>,
+    /// Per line: nothing to say, an index into `converters`, or why the
+    /// line can't be read.
+    lines: Vec<Option<Result<usize, String>>>,
+}
+
+impl ConverterLines {
+    /// What to show beside each line, given the engine's result for each of
+    /// `converters`: what the unit is worth, or why it can't be used.
+    pub fn statuses(
+        &self,
+        results: &[Result<String, String>],
+    ) -> Vec<Option<Result<String, String>>> {
+        self.lines
+            .iter()
+            .map(|line| match line.as_ref()? {
+                Ok(i) => results.get(*i).cloned(),
+                Err(e) => Some(Err(e.clone())),
+            })
+            .collect()
+    }
+}
+
+fn parse_converter_line(line: &str) -> Result<RawConverter, String> {
+    let hint = || CONVERTER_LINE_HINT.to_string();
+    let (names, amount) = line.split_once('=').ok_or_else(hint)?;
+    let names = CONVERTER_NAMES.captures(names.trim()).ok_or_else(hint)?;
+    let amount = CONVERTER_AMOUNT.captures(amount.trim()).ok_or_else(hint)?;
+    let (factor, base) = (amount[1].trim(), amount[2].trim());
+    if factor.is_empty() {
+        return Err(hint());
+    }
+    if base.is_empty() {
+        return Err(format!("{factor} of what? Add a unit"));
+    }
+    let aliases = names.get(2).map_or("", |m| m.as_str());
+    Ok(RawConverter {
+        unit: names[1].to_string(),
+        aliases: aliases
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+        base: base.to_string(),
+        factor: factor.to_string(),
+    })
+}
+
+/// Read the converters page (see [`ConverterLines`]).
+pub fn parse_converters(text: &str) -> ConverterLines {
+    let mut page = ConverterLines::default();
+    for line in text.split('\n') {
+        let line = line.trim();
+        page.lines
+            .push(if line.is_empty() || line.starts_with("//") {
+                None
+            } else {
+                Some(parse_converter_line(line).map(|converter| {
+                    page.converters.push(converter);
+                    page.converters.len() - 1
+                }))
+            });
+    }
+    page
+}
+
 /// A converter name: starts with a letter, at most 24 characters, no
 /// operators that would make it unparseable.
 static CONVERTER_NAME: LazyLock<Regex> =
@@ -172,7 +258,7 @@ fn define_converter(
         return Err("name already taken".to_string());
     }
     // An unknown name in the base is usually a converter defined further
-    // down the table, which the table's reorder buttons fix.
+    // down the page: moving its line up fixes it.
     let base = match engine::eval_line(ctx, &format!("1 {}", conv.base)) {
         Ok(base) => base.display,
         Err(e) => {
@@ -789,6 +875,44 @@ pub(crate) fn recalc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_converters_page_reads_one_converter_per_line() {
+        let page = parse_converters(
+            "// track\n1 lap (laps, lapz) = 400 m\n\n1 inch2 = 1/2.54 cm\nlap = 400 m\n1 dozen = 12\n1 k = 1e3 m",
+        );
+        let raw = |unit: &str, aliases: &[&str], base: &str, factor: &str| RawConverter {
+            unit: unit.to_string(),
+            aliases: aliases.iter().map(|a| a.to_string()).collect(),
+            base: base.to_string(),
+            factor: factor.to_string(),
+        };
+        assert_eq!(
+            page.converters,
+            [
+                raw("lap", &["laps", "lapz"], "m", "400"),
+                raw("inch2", &[], "cm", "1/2.54"),
+                raw("k", &[], "m", "1e3"),
+            ]
+        );
+        let results = [
+            Ok("400 m".to_string()),
+            Err("name already taken".to_string()),
+        ];
+        assert_eq!(
+            page.statuses(&results),
+            [
+                None,
+                Some(Ok("400 m".to_string())),
+                None,
+                Some(Err("name already taken".to_string())),
+                Some(Err(CONVERTER_LINE_HINT.to_string())),
+                Some(Err("12 of what? Add a unit".to_string())),
+                // No result yet for the last one.
+                None,
+            ]
+        );
+    }
 
     fn recalc_str(source: &str) -> Vec<LineResult> {
         let mut ctx = fend_core::Context::new();

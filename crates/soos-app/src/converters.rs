@@ -1,12 +1,20 @@
-//! The converters table: the user's own units, kept apart from the document.
+//! The converters page: the user's own units, one per line, kept apart
+//! from the documents. It reads like a document: what's typed on the left,
+//! what each line means on the right.
 
-use eframe::egui::{self, Color32, RichText};
+use std::time::Instant;
 
-use crate::style::{centered_button, mono, Palette, CHAR_WIDTH};
+use eframe::egui::{self, text::LayoutJob};
+
+use crate::editor::{
+    build_layout_job, caret_line, error_budget, COLUMN_GAP, ERROR_HOLD, GUTTER_PAD,
+    MAX_GUTTER_FRACTION, MIN_GUTTER,
+};
+use crate::style::{mono, status_text, Palette, CHAR_WIDTH, LINE_HEIGHT};
 use crate::window::{modal_room, MODAL_GAP};
 
-/// One row of the table, as typed: `unit` = `factor` × `base`, `aliases`
-/// comma-separated. soos-core validates it on every recalculation.
+/// One row of the converters table that this page replaced, as a save from
+/// before it holds them. Read once, to become a line.
 #[derive(Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ConverterRow {
     pub(crate) unit: String,
@@ -16,240 +24,154 @@ pub(crate) struct ConverterRow {
 }
 
 impl ConverterRow {
-    pub(crate) fn to_raw(&self) -> soos_core::RawConverter {
-        soos_core::RawConverter {
-            unit: self.unit.trim().to_string(),
-            aliases: self
-                .aliases
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect(),
-            base: self.base.trim().to_string(),
-            factor: self.factor.trim().to_string(),
+    pub(crate) fn to_line(&self) -> String {
+        let (unit, aliases) = (self.unit.trim(), self.aliases.trim());
+        let (factor, base) = (self.factor.trim(), self.base.trim());
+        if aliases.is_empty() {
+            format!("1 {unit} = {factor} {base}")
+        } else {
+            format!("1 {unit} ({aliases}) = {factor} {base}")
         }
     }
 }
 
-/// A text field's left plus right margin, added to each column width so the
-/// widths below count visible characters.
-pub(crate) const TEXT_EDIT_HPADDING: f32 = 8.0;
-/// Larger than egui's default, so the row buttons are easy to hit.
-pub(crate) const CONVERTER_BUTTON_PADDING: egui::Vec2 = egui::vec2(10.0, 6.0);
-pub(crate) const CONVERTER_ITEM_GAP: f32 = 8.0;
-pub(crate) const CONVERTER_GRID_SPACING: egui::Vec2 = egui::vec2(14.0, 10.0);
+pub(crate) const CONVERTERS_PAGE_WIDTH: f32 = 520.0;
+/// Shown in an empty page, and the shape every line follows.
+const PLACEHOLDER: &str = "1 lap (laps) = 400 m";
+const CAPTION: &str = "One unit per line. Esc closes.";
+/// The page is at least this many lines tall, so an empty one still looks
+/// like somewhere to type.
+const MIN_LINES: usize = 5;
 
-/// Column widths, each fitting a long but realistic entry.
-pub(crate) const UNIT_COL_WIDTH: f32 = CHAR_WIDTH * 10.0 + TEXT_EDIT_HPADDING; // e.g. "gallon_us"
-pub(crate) const ALIASES_COL_WIDTH: f32 = CHAR_WIDTH * 16.0 + TEXT_EDIT_HPADDING; // e.g. "ton, tonne, MT"
-pub(crate) const BASE_COL_WIDTH: f32 = CHAR_WIDTH * 13.0 + TEXT_EDIT_HPADDING; // e.g. "nautical_mile"
-pub(crate) const FACTOR_COL_WIDTH: f32 = CHAR_WIDTH * 12.0 + TEXT_EDIT_HPADDING; // e.g. "0.3937007874"
-pub(crate) const BUTTON_WIDTH: f32 = CHAR_WIDTH + 2.0 * CONVERTER_BUTTON_PADDING.x;
-/// The ↑ ↓ − buttons.
-pub(crate) const CONTROLS_COL_WIDTH: f32 = 3.0 * BUTTON_WIDTH + 2.0 * CONVERTER_ITEM_GAP;
-/// Fits every converter error (20 characters at most); a longer result is
-/// cut, with the full text on hover.
-pub(crate) const STATUS_COL_WIDTH: f32 = CHAR_WIDTH * 24.0;
-
-pub(crate) const CONVERTERS_GRID_WIDTH: f32 = UNIT_COL_WIDTH
-    + ALIASES_COL_WIDTH
-    + BASE_COL_WIDTH
-    + FACTOR_COL_WIDTH
-    + CONTROLS_COL_WIDTH
-    + STATUS_COL_WIDTH
-    + 5.0 * CONVERTER_GRID_SPACING.x;
-
-/// The rows scroll past this height, so `+ Add converter` stays in view.
-pub(crate) const CONVERTER_ROWS_MAX_HEIGHT: f32 = 320.0;
-/// The overlay's height outside the rows: header, add button, margins.
-const CONVERTER_CHROME_HEIGHT: f32 = 110.0;
-
-/// One grid cell at exactly `size`. Without `set_min_size` a cell reports
-/// its content's size to the `Grid`, and rows and stripes come out uneven.
-pub(crate) fn fixed_cell<R>(
-    ui: &mut egui::Ui,
-    size: egui::Vec2,
-    add_contents: impl FnOnce(&mut egui::Ui) -> R,
-) -> R {
-    ui.allocate_ui_with_layout(
-        size,
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.set_min_size(size);
-            add_contents(ui)
-        },
-    )
-    .inner
-}
-
-/// Truncated, with the full text on hover.
-pub(crate) fn converter_status_cell(
-    ui: &mut egui::Ui,
-    text: &str,
-    color: Color32,
-    row_height: f32,
-) {
-    fixed_cell(ui, egui::vec2(STATUS_COL_WIDTH, row_height), |ui| {
-        let resp =
-            ui.add(egui::Label::new(RichText::new(text).color(color).font(mono())).truncate());
-        if !text.is_empty() {
-            resp.on_hover_text(text);
-        }
-    });
-}
-
-/// The converters table: one editable row per converter with its result
-/// or error, then `+ Add converter`. `focus_row` puts the cursor in that
-/// row's unit field (the first on opening, a new one when added).
-pub(crate) fn converters_window(
+/// The converters page: `text` to edit, and beside each line what the unit
+/// is worth, or why it can't be used. An error on the line being typed
+/// waits [`ERROR_HOLD`], as in a document.
+pub(crate) fn converters_page(
     ui: &mut egui::Ui,
     palette: Palette,
-    converters: &mut Vec<ConverterRow>,
-    results: &[Result<String, String>],
-    focus_row: &mut Option<usize>,
+    text: &mut String,
+    statuses: &[Option<Result<String, String>>],
     decimal_comma: bool,
 ) {
-    ui.style_mut().spacing.button_padding = CONVERTER_BUTTON_PADDING;
-    ui.style_mut().spacing.item_spacing.x = CONVERTER_ITEM_GAP;
-    let want_focus = focus_row.take();
+    let id = egui::Id::new("converters-text");
+    let shown: Vec<Option<Result<String, &str>>> = statuses
+        .iter()
+        .map(|status| match status.as_ref()? {
+            Ok(worth) => Some(Ok(crate::in_decimal_mark(worth, decimal_comma))),
+            Err(why) => Some(Err(why.as_str())),
+        })
+        .collect();
 
-    let mut remove = None;
-    let mut swap = None;
-    let len = converters.len();
-
-    // Every cell is a button's height, and text fields get the same
-    // vertical margin, so they fill the row.
-    let row_height = ui
-        .fonts_mut(|f| f.layout_no_wrap("\u{2191}".to_owned(), mono(), Color32::PLACEHOLDER))
-        .size()
-        .y
-        + 2.0 * ui.spacing().button_padding.y;
-    let text_edit_margin = egui::Margin::symmetric(
-        (TEXT_EDIT_HPADDING / 2.0) as i8,
-        ui.spacing().button_padding.y as i8,
-    );
-
-    let header = |ui: &mut egui::Ui, width: f32, label: &str| {
-        fixed_cell(ui, egui::vec2(width, row_height), |ui| {
-            ui.label(RichText::new(label).color(palette.comment).font(mono()));
-        });
-    };
-
-    let rows_height = CONVERTER_ROWS_MAX_HEIGHT
-        .min(modal_room(ui.ctx()).y - CONVERTER_CHROME_HEIGHT)
-        .max(row_height * 2.0);
-    egui::ScrollArea::both()
-        .max_height(rows_height)
+    let caption_height = LINE_HEIGHT + MODAL_GAP;
+    egui::ScrollArea::vertical()
+        .max_height((modal_room(ui.ctx()).y - caption_height).max(LINE_HEIGHT * 2.0))
         .show(ui, |ui| {
-            egui::Grid::new("converters-grid")
-                .num_columns(6)
-                .spacing(CONVERTER_GRID_SPACING)
-                .striped(true)
-                .show(ui, |ui| {
-                    header(ui, UNIT_COL_WIDTH, "unit");
-                    header(ui, ALIASES_COL_WIDTH, "aliases");
-                    header(ui, BASE_COL_WIDTH, "base");
-                    header(ui, FACTOR_COL_WIDTH, "factor");
-                    header(ui, CONTROLS_COL_WIDTH, "");
-                    header(ui, STATUS_COL_WIDTH, "1 unit =");
-                    ui.end_row();
+            let available_width = ui.available_width();
+            // Sized by the values; an error may run left into the room its
+            // line leaves.
+            let longest = shown
+                .iter()
+                .filter_map(|s| s.as_ref()?.as_ref().ok())
+                .map(|worth| worth.chars().count())
+                .max()
+                .unwrap_or(0);
+            let gutter_width = (longest as f32 * CHAR_WIDTH + GUTTER_PAD)
+                .clamp(MIN_GUTTER, available_width * MAX_GUTTER_FRACTION);
+            let text_width = (available_width - gutter_width - COLUMN_GAP).max(100.0);
+            let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                ui.fonts_mut(|f| f.layout_job(build_layout_job(buf.as_str(), wrap_width, palette)))
+            };
+            let output = egui::TextEdit::multiline(text)
+                .id(id)
+                .frame(egui::Frame::NONE)
+                .desired_width(text_width)
+                .desired_rows(MIN_LINES)
+                .font(mono())
+                .layouter(&mut layouter)
+                .show(ui);
+            // Nothing else here takes the keyboard.
+            output.response.request_focus();
 
-                    let factor_hint = crate::in_decimal_mark("33.2", decimal_comma);
-                    for (i, row) in converters.iter_mut().enumerate() {
-                        let fields = [
-                            (&mut row.unit, UNIT_COL_WIDTH, "teu"),
-                            (&mut row.aliases, ALIASES_COL_WIDTH, "TEU, teus"),
-                            (&mut row.base, BASE_COL_WIDTH, "cbm"),
-                            (&mut row.factor, FACTOR_COL_WIDTH, factor_hint.as_str()),
-                        ];
-                        for (column, (text, width, hint)) in fields.into_iter().enumerate() {
-                            fixed_cell(ui, egui::vec2(width, row_height), |ui| {
-                                let resp = ui.add(
-                                    egui::TextEdit::singleline(text)
-                                        .hint_text(
-                                            RichText::new(hint).color(palette.comment).font(mono()),
-                                        )
-                                        .font(mono())
-                                        .margin(text_edit_margin)
-                                        .desired_width(width),
-                                );
-                                if column == 0 && want_focus == Some(i) {
-                                    resp.request_focus();
-                                }
-                            });
-                        }
-                        fixed_cell(ui, egui::vec2(CONTROLS_COL_WIDTH, row_height), |ui| {
-                            if ui
-                                .add_enabled_ui(i > 0, |ui| centered_button(ui, "\u{2191}"))
-                                .inner
-                                .on_hover_text("Move up")
-                                .clicked()
-                            {
-                                swap = Some((i, i - 1));
-                            }
-                            if ui
-                                .add_enabled_ui(i + 1 < len, |ui| centered_button(ui, "\u{2193}"))
-                                .inner
-                                .on_hover_text("Move down")
-                                .clicked()
-                            {
-                                swap = Some((i, i + 1));
-                            }
-                            if centered_button(ui, "\u{2212}")
-                                .on_hover_text("Remove")
-                                .clicked()
-                            {
-                                remove = Some(i);
-                            }
-                        });
+            if text.is_empty() {
+                let hint =
+                    LayoutJob::simple_singleline(PLACEHOLDER.to_owned(), mono(), palette.comment);
+                let galley = ui.fonts_mut(|f| f.layout_job(hint));
+                ui.painter()
+                    .galley(output.galley_pos, galley, palette.comment);
+            }
 
-                        // Grey, not red, while the row is still being filled in.
-                        let missing: Vec<&str> = [
-                            ("unit", &row.unit),
-                            ("base", &row.base),
-                            ("factor", &row.factor),
-                        ]
-                        .into_iter()
-                        .filter(|(_, value)| value.trim().is_empty())
-                        .map(|(name, _)| name)
-                        .collect();
-                        if !missing.is_empty() {
-                            let text = format!("needs {}", missing.join(", "));
-                            converter_status_cell(ui, &text, palette.comment, row_height);
-                        } else {
-                            match results.get(i) {
-                                Some(Ok(d)) => {
-                                    let d = crate::in_decimal_mark(d, decimal_comma);
-                                    converter_status_cell(ui, &d, palette.result, row_height)
-                                }
-                                Some(Err(e)) => {
-                                    converter_status_cell(ui, e, palette.error, row_height)
-                                }
-                                None => converter_status_cell(ui, "", palette.comment, row_height),
-                            }
-                        }
-                        ui.end_row();
-                    }
+            if output.response.changed() {
+                ui.data_mut(|d| d.insert_temp(id, Instant::now()));
+            }
+            let typing_line = ui
+                .data(|d| d.get_temp::<Instant>(id))
+                .and_then(|at| ERROR_HOLD.checked_sub(at.elapsed()))
+                .filter(|left| !left.is_zero())
+                .and_then(|left| {
+                    ui.ctx().request_repaint_after(left);
+                    caret_line(text, output.cursor_range)
                 });
+
+            let gutter_right =
+                output.response.rect.right() + COLUMN_GAP + gutter_width - GUTTER_PAD;
+            let gutter_budget = gutter_width - GUTTER_PAD;
+            let mut line = 0usize;
+            let mut starts_line = true;
+            for row in &output.galley.rows {
+                let this_line = line;
+                let first_row = std::mem::replace(&mut starts_line, row.ends_with_newline);
+                if row.ends_with_newline {
+                    line += 1;
+                }
+                let Some(Some(status)) = shown.get(this_line).filter(|_| first_row) else {
+                    continue;
+                };
+                let row_rect = row.rect().translate(output.galley_pos.to_vec2());
+                let (label, color, budget) = match status {
+                    Ok(worth) => (worth.as_str(), palette.result, gutter_budget),
+                    Err(_) if typing_line == Some(this_line) => continue,
+                    Err(why) => (
+                        *why,
+                        palette.error,
+                        error_budget(gutter_right, row_rect.right(), gutter_budget),
+                    ),
+                };
+                let mut job = LayoutJob::simple(label.to_owned(), mono(), color, f32::INFINITY);
+                job.wrap = egui::text::TextWrapping::truncate_at_width(budget);
+                let galley = ui.fonts_mut(|f| f.layout_job(job));
+                let size = galley.rect.size();
+                let pos = egui::pos2(gutter_right - size.x, row_rect.top());
+                let elided = galley.elided;
+                ui.painter().galley(pos, galley, color);
+                if elided {
+                    ui.allocate_rect(egui::Rect::from_min_size(pos, size), egui::Sense::hover())
+                        .on_hover_text(label);
+                }
+            }
         });
 
     ui.add_space(MODAL_GAP);
-    if len >= soos_core::MAX_CONVERTERS {
-        ui.label(
-            RichText::new(format!("{} converters max", soos_core::MAX_CONVERTERS))
-                .color(palette.comment)
-                .font(mono()),
-        );
-    } else if centered_button(ui, "+ Add converter").clicked() {
-        converters.push(ConverterRow::default());
-        *focus_row = Some(converters.len() - 1);
-    }
+    status_text(ui, CAPTION, palette.comment);
+}
 
-    if let Some(i) = remove {
-        converters.remove(i);
-    }
-    if let Some((a, b)) = swap {
-        converters.swap(a, b);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_saved_table_row_becomes_a_line_the_page_reads() {
+        let row = ConverterRow {
+            unit: " teu".to_string(),
+            aliases: "TEU, teus".to_string(),
+            base: "cbm".to_string(),
+            factor: "33.2".to_string(),
+        };
+        assert_eq!(row.to_line(), "1 teu (TEU, teus) = 33.2 cbm");
+        let read = soos_core::parse_converters(&row.to_line()).converters;
+        assert_eq!(read[0].aliases, ["TEU", "teus"]);
+        assert_eq!(
+            (read[0].base.as_str(), read[0].factor.as_str()),
+            ("cbm", "33.2")
+        );
     }
 }

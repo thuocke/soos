@@ -230,31 +230,6 @@ pub(crate) fn cap_center_offset(ui: &egui::Ui) -> f32 {
     )
 }
 
-/// Like `ui.button`, with the glyph's ink centred: JetBrains Mono's `+` and
-/// `-` sit visibly high in egui's own button.
-pub(crate) fn centered_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    let galley = ui.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), mono(), Color32::PLACEHOLDER));
-    let padding = ui.spacing().button_padding;
-    let size = galley.size() + 2.0 * padding;
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    if ui.is_rect_visible(rect) {
-        let visuals = ui.style().interact(&response);
-        ui.painter().rect(
-            rect.expand(visuals.expansion),
-            visuals.corner_radius,
-            visuals.weak_bg_fill,
-            visuals.bg_stroke,
-            egui::StrokeKind::Inside,
-        );
-        let text_pos = rect.left_top() + padding + egui::vec2(0.0, ink_center_offset(&galley));
-        ui.painter()
-            .galley_with_override_text_color(text_pos, galley, visuals.text_color());
-    }
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), text));
-    response.on_hover_cursor(egui::CursorIcon::PointingHand)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

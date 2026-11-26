@@ -61,12 +61,12 @@ private const val STALE_DIM = 0.55f
  * An error on the line being typed waits this long after the last keystroke:
  * half a line is usually an error (`5 k` before `5 kg`).
  */
-private const val ERROR_HOLD_MS = 900L
+internal const val ERROR_HOLD_MS = 900L
 
-private val PagePad = 16.dp
+internal val PagePad = 16.dp
 
 /** Between the expressions and the result column. */
-private val ColumnGap = 12.dp
+internal val ColumnGap = 12.dp
 private val GutterPad = 4.dp
 private val MinGutter = 72.dp
 
@@ -74,10 +74,10 @@ private val MinGutter = 72.dp
 private const val MaxGutterFraction = 0.4f
 
 /** The line height the desktop uses, 1.75 times the font size. */
-private val LineHeight = FontSize * 1.75f
+internal val LineHeight = FontSize * 1.75f
 
 /** The result column's width: the widest value, within limits. Errors don't count; a long one is cut. */
-private fun gutterWidth(cells: List<Cell?>, available: Dp, charWidth: Dp): Dp {
+internal fun gutterWidth(cells: List<Cell?>, available: Dp, charWidth: Dp): Dp {
     val widest = cells.filterNotNull()
         .filter { it.error == null }
         .maxOfOrNull { it.text.codePointCount(0, it.text.length) } ?: 0
@@ -86,7 +86,7 @@ private fun gutterWidth(cells: List<Cell?>, available: Dp, charWidth: Dp): Dp {
 }
 
 /** Colours the spans soos-core finds; what's outside them is plain text. */
-private class Highlighter(private val palette: Palette) : VisualTransformation {
+internal class Highlighter(private val palette: Palette) : VisualTransformation {
     override fun filter(text: AnnotatedString): TransformedText {
         val source = text.text
         val styled = buildAnnotatedString {

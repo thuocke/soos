@@ -59,10 +59,11 @@ fun SoosScreen(state: AppState) {
                 ConvertersScreen(state, palette)
             } else {
                 Document(state, palette)
-                Column(Modifier.align(Alignment.BottomCenter)) {
-                    Toast(state, palette)
-                    UndoBar(state, palette)
-                }
+            }
+            // Over both: a converter's full error shows here too.
+            Column(Modifier.align(Alignment.BottomCenter)) {
+                Toast(state, palette)
+                UndoBar(state, palette)
             }
         }
         StatusBar(state, palette)

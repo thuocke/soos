@@ -14,7 +14,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import java.io.File
 import java.io.IOException
-import java.util.Collections
 import java.util.concurrent.Executors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -43,7 +42,7 @@ class ClosedTab(val id: Long, val index: Int, val tab: Tab)
 private class Request(
     val generation: Long,
     val text: String,
-    val converters: List<ConverterRow>,
+    val converters: String,
     val highPrecision: Boolean,
     val decimalComma: Boolean,
 )
@@ -69,7 +68,7 @@ class AppState(app: Application) : AndroidViewModel(app) {
     /** Always a valid index into [tabs]. */
     var active by mutableIntStateOf(0)
         private set
-    var converters by mutableStateOf<List<ConverterRow>>(emptyList())
+    var converters by mutableStateOf("")
         private set
 
     /** `,` is the decimal mark and `.` groups thousands. The saved text is as typed. */
@@ -234,29 +233,8 @@ class AppState(app: Application) : AndroidViewModel(app) {
         tabsChanged()
     }
 
-    fun setConverter(index: Int, row: ConverterRow) {
-        converters = converters.toMutableList().also { it[index] = row }
-        convertersChanged()
-    }
-
-    fun addConverter() {
-        if (converters.size >= MAX_CONVERTERS) return
-        converters = converters + ConverterRow()
-        convertersChanged()
-    }
-
-    fun removeConverter(index: Int) {
-        converters = converters.toMutableList().also { it.removeAt(index) }
-        convertersChanged()
-    }
-
-    fun moveConverter(index: Int, to: Int) {
-        if (to !in converters.indices) return
-        converters = converters.toMutableList().also { Collections.swap(it, index, to) }
-        convertersChanged()
-    }
-
-    private fun convertersChanged() {
+    fun editConverters(text: String) {
+        converters = text
         recalculate()
         scheduleSave()
     }

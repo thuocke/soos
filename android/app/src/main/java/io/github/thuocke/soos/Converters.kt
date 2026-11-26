@@ -1,179 +1,197 @@
 package io.github.thuocke.soos
 
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.style.LineHeightStyle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
+
+/** Shown in an empty page, and the shape every line follows. */
+private const val CONVERTER_PLACEHOLDER = "1 lap (laps) = 400 m"
 
 /**
- * The converters table: the user's own units, kept apart from the document.
- * Each row is `unit` = `factor` × `base`, and soos-core checks it on every
- * recalculation; what it says is under the row.
+ * The converters page: the user's own units, one per line, kept apart from
+ * the documents. It reads like a document: what's typed on the left, and
+ * beside each line what the unit is worth or why it can't be used.
+ * soos-core reads the lines on every recalculation.
  */
 @Composable
 fun ConvertersScreen(state: AppState, palette: Palette, modifier: Modifier = Modifier) {
-    val statuses = state.calculated?.converters ?: emptyList()
-    // So the hint reads the way the user types a decimal.
-    val factorHint = if (state.decimalComma) "33,2" else "33.2"
-    LazyColumn(
-        modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(24.dp),
-    ) {
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                BasicText(
-                    "Converters",
-                    style = textStyle(palette.plain).copy(fontWeight = FontWeight.Bold),
-                    modifier = Modifier.weight(1f),
-                )
-                Button("Done", palette.keyword, onClickLabel = "Close the converters") {
-                    state.showConverters = false
-                }
-            }
+    val text = state.converters
+    val cells = (state.calculated?.converters ?: emptyList()).map { status ->
+        status?.let { Cell(it.ok ?: it.error ?: "", "", it.error, false) }
+    }
+    val font = mono()
+    val style = remember(palette, font) {
+        TextStyle(
+            fontFamily = font,
+            fontSize = FontSize,
+            lineHeight = LineHeight,
+            color = palette.plain,
+            lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None),
+        )
+    }
+    val highlighter = remember(palette) { Highlighter(palette) }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+
+    // Half a line is usually an error, so errors wait for a pause in typing.
+    var edits by remember { mutableIntStateOf(0) }
+    var typing by remember { mutableStateOf(false) }
+    LaunchedEffect(edits) {
+        if (edits > 0) {
+            typing = true
+            delay(ERROR_HOLD_MS)
+            typing = false
+        }
+    }
+
+    val charWidth = with(LocalDensity.current) { (FontSize * CharWidthEm).toDp() }
+    val lineStarts = remember(text) {
+        buildList {
+            add(0)
+            text.forEachIndexed { i, c -> if (c == '\n') add(i + 1) }
+        }
+    }
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+
+    Column(modifier.fillMaxSize()) {
+        Row(
+            Modifier.padding(start = PagePad, end = PagePad / 2),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             BasicText(
-                "Your own units: 1 unit = factor × base.",
-                style = textStyle(palette.comment),
-                modifier = Modifier.padding(top = 4.dp),
+                "Your converters",
+                style = textStyle(palette.plain).copy(fontWeight = FontWeight.Bold),
+                modifier = Modifier.weight(1f),
             )
+            Box(
+                Modifier
+                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                    .clickable(role = Role.Button, onClickLabel = "Close the converters") {
+                        state.showConverters = false
+                    }
+                    .padding(horizontal = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                BasicText("Done", style = textStyle(palette.keyword))
+            }
         }
-        itemsIndexed(state.converters) { index, row ->
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Field(row.unit, "teu", palette, Modifier.weight(1f)) {
-                        state.setConverter(index, row.copy(unit = it))
-                    }
-                    Field(row.aliases, "TEU, teus", palette, Modifier.weight(1f)) {
-                        state.setConverter(index, row.copy(aliases = it))
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Field(row.base, "cbm", palette, Modifier.weight(1f)) {
-                        state.setConverter(index, row.copy(base = it))
-                    }
-                    Field(row.factor, factorHint, palette, Modifier.weight(1f)) {
-                        state.setConverter(index, row.copy(factor = it))
-                    }
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val (text, color) = rowStatus(row, statuses.getOrNull(index), palette)
-                    BasicText(
-                        text,
-                        style = textStyle(color),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Button("↑", palette.plain, enabled = index > 0, onClickLabel = "Move up") {
-                        state.moveConverter(index, index - 1)
-                    }
-                    Button(
-                        "↓",
-                        palette.plain,
-                        enabled = index + 1 < state.converters.size,
-                        onClickLabel = "Move down",
-                    ) { state.moveConverter(index, index + 1) }
-                    Button("−", palette.plain, onClickLabel = "Remove") {
-                        state.removeConverter(index)
+        BasicText(
+            "One unit per line.",
+            style = textStyle(palette.comment),
+            modifier = Modifier.padding(horizontal = PagePad),
+        )
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+            val gutter = gutterWidth(cells, maxWidth - PagePad * 2, charWidth)
+            val viewport = maxHeight
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = PagePad, vertical = 12.dp),
+            ) {
+                BasicTextField(
+                    value = text,
+                    onValueChange = {
+                        edits += 1
+                        state.editConverters(it)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(end = gutter + ColumnGap)
+                        // A tap below the text still places the caret.
+                        .defaultMinSize(minHeight = viewport - 24.dp)
+                        .focusRequester(focus),
+                    textStyle = style,
+                    cursorBrush = SolidColor(palette.plain),
+                    visualTransformation = highlighter,
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.None,
+                        autoCorrectEnabled = false,
+                    ),
+                    onTextLayout = { layout = it },
+                    decorationBox = { field ->
+                        Box {
+                            if (text.isEmpty()) {
+                                BasicText(CONVERTER_PLACEHOLDER, style = style.copy(color = palette.comment))
+                            }
+                            field()
+                        }
+                    },
+                )
+
+                val measured = layout
+                if (measured != null) {
+                    cells.forEachIndexed { line, cell ->
+                        if (cell == null || line >= lineStarts.size) return@forEachIndexed
+                        val error = cell.error
+                        if (error != null && typing) return@forEachIndexed
+                        val offset = lineStarts[line].coerceAtMost(measured.layoutInput.text.length)
+                        val top = measured.getLineTop(measured.getLineForOffset(offset))
+                        BasicText(
+                            text = cell.text,
+                            style = style.copy(
+                                color = if (error != null) palette.error else palette.result,
+                                textAlign = TextAlign.End,
+                            ),
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .offset { IntOffset(0, top.toInt()) }
+                                .width(gutter)
+                                // The column cuts a long error; a tap shows all of it.
+                                .then(
+                                    if (error != null) {
+                                        Modifier.clickable(role = Role.Button, onClickLabel = "Show the error") {
+                                            state.show(error, error = true, forMillis = 4000)
+                                        }
+                                    } else {
+                                        Modifier
+                                    },
+                                ),
+                        )
                     }
                 }
             }
         }
-        item {
-            if (state.converters.size >= MAX_CONVERTERS) {
-                BasicText("$MAX_CONVERTERS converters max", style = textStyle(palette.comment))
-            } else {
-                Button("+ Add converter", palette.keyword) { state.addConverter() }
-            }
-        }
-    }
-}
-
-/** Grey, not red, while a row is still being filled in. */
-private fun rowStatus(
-    row: ConverterRow,
-    status: ConverterStatus?,
-    palette: Palette,
-): Pair<String, androidx.compose.ui.graphics.Color> {
-    val missing = listOfNotNull(
-        "unit".takeIf { row.unit.isBlank() },
-        "base".takeIf { row.base.isBlank() },
-        "factor".takeIf { row.factor.isBlank() },
-    )
-    return when {
-        missing.isNotEmpty() -> "needs ${missing.joinToString(", ")}" to palette.comment
-        status?.ok != null -> "1 ${row.unit.trim()} = ${status.ok}" to palette.result
-        status?.error != null -> status.error to palette.error
-        else -> "" to palette.comment
-    }
-}
-
-@Composable
-private fun Field(
-    value: String,
-    hint: String,
-    palette: Palette,
-    modifier: Modifier,
-    onChange: (String) -> Unit,
-) {
-    BasicTextField(
-        value = value,
-        onValueChange = onChange,
-        modifier = modifier
-            .border(1.dp, palette.comment, RoundedCornerShape(8.dp))
-            .padding(12.dp),
-        singleLine = true,
-        textStyle = textStyle(palette.plain),
-        cursorBrush = SolidColor(palette.plain),
-        keyboardOptions = KeyboardOptions(
-            capitalization = KeyboardCapitalization.None,
-            autoCorrectEnabled = false,
-        ),
-        decorationBox = { field ->
-            Box {
-                if (value.isEmpty()) BasicText(hint, style = textStyle(palette.comment))
-                field()
-            }
-        },
-    )
-}
-
-@Composable
-private fun Button(
-    label: String,
-    color: androidx.compose.ui.graphics.Color,
-    enabled: Boolean = true,
-    onClickLabel: String? = null,
-    onClick: () -> Unit,
-) {
-    Box(
-        Modifier
-            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-            .clickable(enabled = enabled, role = Role.Button, onClickLabel = onClickLabel, onClick = onClick)
-            .padding(horizontal = 8.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        BasicText(label, style = textStyle(if (enabled) color else color.copy(alpha = 0.35f)))
     }
 }

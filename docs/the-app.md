@@ -129,7 +129,7 @@ differs is the touch screen.
 ## Error labels
 
 The labels this guide mentions, as Soos shows them. The converter labels
-show in the converter table, the others beside the line.
+show on the converters page, the others beside the line.
 
 | Label | Means | More |
 |---|---|---|
@@ -139,7 +139,7 @@ show in the converter table, the others beside the line.
 | `no rates yet` | A conversion between currencies before the first exchange rates arrive | [Exchange rates](money-and-units.md#exchange-rates) |
 | `invalid unit name` | A converter name that isn't letters, digits and `_` | [Your own converters](money-and-units.md#your-own-converters) |
 | `unit name reserved` | A converter named like a built-in word | [Your own converters](money-and-units.md#your-own-converters) |
-| `name already taken` | A converter name Soos or an earlier row already uses | [Your own converters](money-and-units.md#your-own-converters) |
+| `name already taken` | A converter name Soos or an earlier line already uses | [Your own converters](money-and-units.md#your-own-converters) |
 | `base power too large` | A converter base with a power over 6 | [Your own converters](money-and-units.md#your-own-converters) |
 | `needs on or off` | A percent before an amount, or in a variable beside one: `15% + $100` | [Plus and minus a percent](phrasing.md#plus-and-minus-a-percent) |
 | `not a percent` | `on` or `off` after a name that doesn't hold a percent | [Percent](phrasing.md#percent) |

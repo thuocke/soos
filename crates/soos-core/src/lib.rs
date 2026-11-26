@@ -44,7 +44,7 @@ mod preprocess;
 pub mod storage;
 mod watchdog;
 
-pub use document::{LineResult, RawConverter, MAX_CONVERTERS};
+pub use document::{parse_converters, ConverterLines, LineResult, RawConverter, MAX_CONVERTERS};
 pub use error::LineError;
 
 /// A recalculated document: one result per converter (its value or why

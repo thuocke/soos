@@ -82,10 +82,10 @@ The keys come in alphabetical order. They hold:
   such as PowerToys Run stays fast.
 - With no saved rates and no network, a document in one currency still
   works. A line that needs a second currency says `no rates yet`.
-- `soos-cli` uses the converters you've set in the app (`settings` > **Your converters**), once you
-  close the converters window.
-- Settings such as **Currency amounts** stay in the app; `soos-cli` takes `--high-precision`
-  instead.
+- `soos-cli` uses the converters you've set in the app (`settings` >
+  **Your converters**), once you close the converters page.
+- Settings such as **Currency amounts** stay in the app; `soos-cli` takes
+  `--high-precision` instead.
 
 ### Data folder
 

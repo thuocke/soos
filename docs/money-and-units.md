@@ -97,43 +97,49 @@ Click a result to copy it without thousands separators; see
 
 ## Your own converters
 
-A converter is a unit you name, in terms of one Soos already knows. Add one
-in the table behind `settings` > **Your converters** (`↔` on Android): see
-[Add your own converter](own-converter.md). Each row has four columns:
+A converter is a unit you name, in terms of one Soos already knows. Each
+one is a line on the page behind `settings` > **Your converters** (`↔` on
+Android): see [Add your own converter](own-converter.md). A line reads:
 
-| Column | Holds | Example |
+```
+1 lap (laps) = 400 m
+```
+
+| Part | Holds | Example |
 |---|---|---|
-| unit | the name you will type | `lap` |
-| aliases | other names for it, separated by commas | `laps` |
-| base | a unit Soos already knows | `m` |
-| factor | 1 unit is this many bases: a number or a calculation | `400` |
+| `1` and a name | the name you will type; the `1` tells Soos this is a unit, not a variable | `1 lap` |
+| names in brackets | other names for it, separated by commas; leave the brackets out if there are none | `(laps)` |
+| an amount | 1 of your unit is this many: a number or a calculation | `400` |
+| a unit | a unit Soos already knows | `m` |
 
-The factor may be a calculation, and a fraction stays exact:
+Beside each line Soos shows what the unit is worth (`400 m`), or an error
+label. The amount may be a calculation, and a fraction stays exact: after
+`1 seventh = 1/7 m`, `7 seventh in m` is `1 m`.
 
-| unit | aliases | base | factor | Then |
-|---|---|---|---|---|
-| `seventh` | | `m` | `1/7` | `7 seventh in m` is `1 m` |
+Soos refuses a name that:
 
-The unit column refuses:
-
-- a name that isn't letters, digits and `_`, starting with a letter, up to
-  24 characters: `invalid unit name`;
-- a [reserved word](totals.md#names-you-cant-use): `unit name reserved`;
-- a name Soos or an earlier row already uses, such as `m` or `force`:
+- isn't letters, digits and `_`, starting with a letter, up to 24
+  characters: `invalid unit name`;
+- is a [reserved word](totals.md#names-you-cant-use): `unit name reserved`;
+- Soos or an earlier line already uses, such as `m` or `force`:
   `name already taken`.
 
 More rules:
 
-- `↑` and `↓` move a row; an earlier row keeps a name that two rows want.
-  `-` deletes a row. `1 unit =` shows what the row means (`400 m`) or its
-  error label (`needs unit, base, factor`).
+- A line may build on a unit from a line above it. Built on one from a
+  line below, it says `define base first`: move the line down.
+- An empty line or a `// comment` is skipped. A line Soos can't read says
+  `write it like 1 lap = 400 m`.
+- The page holds 64 converters; one more says `too many converters`.
 - `soos-cli` uses the converters you've set in the app, once you close the
-  table.
-- The table is kept apart from your text, so clearing a tab never loses a
+  page.
+- The page is kept apart from your text, so clearing a tab never loses a
   converter.
+- Converters you made in the table that earlier versions had are now
+  lines on the page.
 - An alias is dropped if it isn't a valid name (`2x`), is a
   [reserved word](totals.md#names-you-cant-use) (`sum`), or is already a
-  name: a unit such as `m`, or an alias an earlier row took. The rest of the
-  row still works, and `1 unit =` lists the alias after `skipped:`.
+  name: a unit such as `m`, or an alias an earlier line took. The rest of the
+  line still works, and its result lists the alias after `skipped:`.
 - A base may hold a power of units up to 6 (`kg m^2 / s^3`); a larger one
   says `base power too large`, however it is written (`cm^9`, `cm**9`).

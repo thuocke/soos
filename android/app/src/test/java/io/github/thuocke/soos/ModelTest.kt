@@ -16,7 +16,7 @@ class ModelTest {
         val saved = Saved(
             tabs = listOf(SavedTab(3, "Rent: 1800\n\"quoted\" €5 😀"), SavedTab(7, "")),
             active = 1,
-            converters = listOf(ConverterRow("teu", "TEU, teus", "cbm", "33.2")),
+            converters = "// boxes\n1 teu (TEU, teus) = 33.2 cbm",
             decimalComma = true,
             highPrecision = true,
         )
@@ -82,23 +82,24 @@ class ModelTest {
     }
 
     @Test
-    fun aConverterRowIsTrimmedAndItsAliasesSplit() {
-        val json = ConverterRow(" teu ", "TEU, , teus ", " cbm", "33.2 ").toJson()
-        assertEquals("teu", json.getString("unit"))
-        assertEquals("""["TEU","teus"]""", json.getJSONArray("aliases").toString())
-        assertEquals("cbm", json.getString("base"))
-        assertEquals("33.2", json.getString("factor"))
+    fun aSavedConvertersTableBecomesThePage() {
+        val saved = decode(
+            """{"converters":[{"unit":" teu ","aliases":"TEU, teus","base":"cbm","factor":"33.2 "},
+                              {"unit":"lap","aliases":"","base":"m","factor":"400"}]}""",
+        )
+        assertEquals("1 teu (TEU, teus) = 33.2 cbm\n1 lap = 400 m", saved!!.converters)
     }
 
     @Test
     fun theBridgesAnswerIsRead() {
         val calculated = parseCalculated(
-            """{"converters":[{"ok":"33.2 m^3"},{"error":"unknown unit"}],
+            """{"converters":[{"ok":"33.2 m^3"},{"error":"unknown unit"},null],
                 "lines":[null,{"text":"10","copy":"10","error":null,"total":true},
                          {"text":"unknown x","copy":"unknown x","error":"unknown identifier 'x'","total":false}]}""",
         )
         assertEquals(ConverterStatus("33.2 m^3", null), calculated.converters[0])
         assertEquals(ConverterStatus(null, "unknown unit"), calculated.converters[1])
+        assertNull(calculated.converters[2])
         assertNull(calculated.lines[0])
         assertEquals(Cell("10", "10", null, true), calculated.lines[1])
         assertEquals("unknown identifier 'x'", calculated.lines[2]!!.error)

@@ -27,7 +27,7 @@ mod tray;
 mod update;
 mod window;
 
-use converters::{converters_window, ConverterRow, CONVERTERS_GRID_WIDTH};
+use converters::{converters_page, ConverterRow, CONVERTERS_PAGE_WIDTH};
 use example::example_preview;
 #[cfg(not(target_os = "linux"))]
 use hotkey::load_hotkey;
@@ -150,8 +150,13 @@ struct SavedState {
     decimal_comma: bool,
     hotkey_code: Option<String>,
     hotkey_mods: u32,
-    /// Kept apart from the tabs, so clearing a document never loses them.
+    /// The converters table a save from before the converters page holds;
+    /// read once, to become `converters_text`.
+    #[serde(skip_serializing)]
     converters: Vec<ConverterRow>,
+    /// The converters page. Kept apart from the tabs, so clearing a
+    /// document never loses a converter.
+    converters_text: Option<String>,
     tabs: Vec<Tab>,
     active: usize,
     always_on_top: bool,
@@ -178,13 +183,14 @@ struct SoosApp {
     last_edit: Option<Instant>,
     /// The tab the editor last took the keyboard for.
     focused_tab: Option<u64>,
-    converters: Vec<ConverterRow>,
-    /// One per converter row: its value or why it's invalid.
+    /// The converters page, as typed: one converter per line.
+    converters: String,
+    /// One per converter the page holds: its value or why it's invalid.
     converter_results: Vec<Result<String, String>>,
     rates: RateSource,
     /// What the newest recalculation was asked for.
     last_text: String,
-    last_converters: Vec<ConverterRow>,
+    last_converters: String,
     /// What the converters export for soos-cli last held.
     exported_converters: Vec<soos_core::RawConverter>,
     /// Why the last converters export failed, for the status bar.
@@ -199,10 +205,6 @@ struct SoosApp {
     /// This launch's marker, removed when the first results arrive.
     launch_marker: Option<std::path::PathBuf>,
     show_converters: bool,
-    /// The window's size before it was widened for the converters table.
-    size_before_converters: Option<egui::Vec2>,
-    /// Put the cursor in this row of the converters table.
-    focus_converter: Option<usize>,
     /// False while hidden to the tray, or minimized by closing on macOS.
     visible: bool,
     /// When closing minimized the window (macOS), until it is shown again.
@@ -284,19 +286,21 @@ impl SoosApp {
             requested_at: None,
             last_edit: None,
             focused_tab: None,
-            converters: saved.converters,
+            converters: saved.converters_text.unwrap_or_else(|| {
+                let lines: Vec<String> =
+                    saved.converters.iter().map(ConverterRow::to_line).collect();
+                lines.join("\n")
+            }),
             converter_results: Vec::new(),
             rates,
             last_text: String::new(),
-            last_converters: Vec::new(),
+            last_converters: String::new(),
             exported_converters: Vec::new(),
             export_error: None,
             load_warning: None,
             paused: None,
             launch_marker: None,
             show_converters: false,
-            size_before_converters: None,
-            focus_converter: None,
             visible: true,
             minimized_at: None,
             quitting: false,
@@ -362,15 +366,12 @@ impl SoosApp {
     /// a factor or base typed `0,3048` is `0.3048`; without this it would be
     /// 3048, silently. The soos-cli export goes through here too.
     fn raw_converters(&self) -> Vec<soos_core::RawConverter> {
-        self.converters
-            .iter()
-            .map(|row| {
-                let mut raw = row.to_raw();
-                raw.factor = in_decimal_mark(&raw.factor, self.decimal_comma);
-                raw.base = in_decimal_mark(&raw.base, self.decimal_comma);
-                raw
-            })
-            .collect()
+        let mut converters = soos_core::parse_converters(&self.converters).converters;
+        for raw in &mut converters {
+            raw.factor = in_decimal_mark(&raw.factor, self.decimal_comma);
+            raw.base = in_decimal_mark(&raw.base, self.decimal_comma);
+        }
+        converters
     }
 
     fn force_recalc(&mut self) {
@@ -434,7 +435,7 @@ impl eframe::App for SoosApp {
         let saved = SavedState {
             high_precision: self.high_precision,
             decimal_comma: self.decimal_comma,
-            converters: self.converters.clone(),
+            converters_text: Some(self.converters.clone()),
             tabs: self.tabs.clone(),
             active: self.active,
             always_on_top: self.always_on_top,
@@ -555,19 +556,19 @@ impl eframe::App for SoosApp {
             }
         }
 
-        self.fit_window_to_overlay(ui.ctx());
         if self.show_converters {
-            let modal = soos_modal(ui, palette, "converters", CONVERTERS_GRID_WIDTH, |ui| {
-                converters_window(
+            let statuses =
+                soos_core::parse_converters(&self.converters).statuses(&self.converter_results);
+            let modal = soos_modal(ui, palette, "converters", CONVERTERS_PAGE_WIDTH, |ui| {
+                converters_page(
                     ui,
                     palette,
                     &mut self.converters,
-                    &self.converter_results,
-                    &mut self.focus_converter,
+                    &statuses,
                     self.decimal_comma,
                 );
             });
-            // Clicks inside edit the table, so only Esc or a click outside
+            // Clicks inside edit the page, so only Esc or a click outside
             // closes it.
             if modal.should_close() {
                 self.show_converters = false;
@@ -698,7 +699,7 @@ mod tests {
         assert!(closed_while_calculating(&marker), "it never finished");
         let _ = std::fs::remove_dir_all(&dir);
 
-        let mut app = app(false, Vec::new());
+        let mut app = app(false, "");
         app.tabs[app.active].text = "1 + 1".to_string();
         app.paused = Some((app.tabs[app.active].id, "1 + 1".to_string()));
         app.recalc(std::time::Duration::ZERO);
@@ -709,10 +710,10 @@ mod tests {
         assert_eq!(app.results, [LineResult::Value("3".to_string())]);
     }
 
-    fn app(decimal_comma: bool, converters: Vec<ConverterRow>) -> SoosApp {
+    fn app(decimal_comma: bool, converters: &str) -> SoosApp {
         let saved = SavedState {
             decimal_comma,
-            converters,
+            converters_text: Some(converters.to_string()),
             ..Default::default()
         };
         SoosApp::from_saved(
@@ -733,14 +734,14 @@ mod tests {
         };
         eframe::set_value(&mut storage, eframe::APP_KEY, &saved);
         let loaded: SavedState = eframe::get_value(&storage, eframe::APP_KEY).unwrap();
-        assert!(app(loaded.decimal_comma, Vec::new()).decimal_comma);
+        assert!(app(loaded.decimal_comma, "").decimal_comma);
     }
 
     /// What the user types is read in their notation, the engine and the
     /// export get the point, and the results come back in the point's form.
     #[test]
     fn the_decimal_comma_swaps_what_is_typed_before_the_engine_reads_it() {
-        let mut app = app(true, Vec::new());
+        let mut app = app(true, "");
         app.tabs[0].text = "3,5 + 1\n3.000.000 / 2\nNovember 15, 2027".to_string();
         app.recalc(std::time::Duration::from_secs(5));
         assert_eq!(
@@ -755,25 +756,37 @@ mod tests {
         assert_eq!(cells[1].as_ref().unwrap().shown.text, "1.500.000");
         // A date's comma isn't between digits, so the engine reads it as
         // typed, as with the point.
-        let mut point = self::app(false, Vec::new());
+        let mut point = self::app(false, "");
         point.tabs[0].text = "November 15, 2027".to_string();
         point.recalc(std::time::Duration::from_secs(5));
         assert_eq!(app.results[2], point.results[0]);
     }
 
+    /// A save from before the converters page: its table rows become lines.
+    #[test]
+    fn a_saved_converters_table_becomes_the_page() {
+        let saved = SavedState {
+            converters: vec![ConverterRow {
+                unit: "lap".to_string(),
+                aliases: "laps".to_string(),
+                base: "m".to_string(),
+                factor: "400".to_string(),
+            }],
+            ..Default::default()
+        };
+        let app = SoosApp::from_saved(
+            saved,
+            RateSource::new(std::path::PathBuf::new()),
+            Recalculator::spawn(egui::Context::default()),
+        );
+        assert_eq!(app.converters, "1 lap (laps) = 400 m");
+    }
+
     #[test]
     fn the_decimal_comma_reads_a_converter_factor_and_the_export_keeps_the_point() {
-        let row = ConverterRow {
-            unit: "foot2".to_string(),
-            aliases: String::new(),
-            base: "m".to_string(),
-            factor: "0,3048".to_string(),
-        };
-        assert_eq!(
-            app(true, vec![row.clone()]).raw_converters()[0].factor,
-            "0.3048"
-        );
+        let line = "1 foot2 = 0,3048 m";
+        assert_eq!(app(true, line).raw_converters()[0].factor, "0.3048");
         // Off, the engine reads what was typed.
-        assert_eq!(app(false, vec![row]).raw_converters()[0].factor, "0,3048");
+        assert_eq!(app(false, line).raw_converters()[0].factor, "0,3048");
     }
 }

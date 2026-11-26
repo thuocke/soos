@@ -1,6 +1,5 @@
 package io.github.thuocke.soos
 
-import org.json.JSONArray
 import org.json.JSONObject
 
 /** One line's result as soos-core's `result_cells` shows it. */
@@ -9,8 +8,8 @@ data class Cell(val text: String, val copy: String, val error: String?, val tota
 /** A converter's value (`ok`) or why it's invalid (`error`). */
 data class ConverterStatus(val ok: String?, val error: String?)
 
-/** A recalculated document: a status per converter, a cell per line. */
-data class Calculated(val converters: List<ConverterStatus>, val lines: List<Cell?>)
+/** A recalculated document: a status per line of the converters page (`null` for a blank one), a cell per line. */
+data class Calculated(val converters: List<ConverterStatus?>, val lines: List<Cell?>)
 
 /** The kinds soos-core's highlighter gives, in the order of its `kind_code`. */
 enum class TokenKind { Comment, Header, Label, Keyword, ConversionWord }
@@ -36,7 +35,7 @@ object Engine {
     @JvmStatic private external fun recalc(
         generation: Long,
         text: String,
-        convertersJson: String,
+        convertersText: String,
         highPrecision: Boolean,
         decimalComma: Boolean,
     ): String?
@@ -53,12 +52,11 @@ object Engine {
     fun calculate(
         generation: Long,
         text: String,
-        converters: List<ConverterRow>,
+        converters: String,
         highPrecision: Boolean,
         decimalComma: Boolean,
     ): Calculated? {
-        val json = JSONArray(converters.map { it.toJson() }).toString()
-        return recalc(generation, text, json, highPrecision, decimalComma)?.let(::parseCalculated)
+        return recalc(generation, text, converters, highPrecision, decimalComma)?.let(::parseCalculated)
     }
 
     fun spans(text: String): List<Span> {
@@ -73,11 +71,15 @@ fun parseCalculated(json: String): Calculated {
     val root = JSONObject(json)
     val converters = root.getJSONArray("converters").let { array ->
         List(array.length()) {
-            val status = array.getJSONObject(it)
-            ConverterStatus(
-                ok = if (status.has("ok")) status.getString("ok") else null,
-                error = if (status.has("error")) status.getString("error") else null,
-            )
+            if (array.isNull(it)) {
+                null
+            } else {
+                val status = array.getJSONObject(it)
+                ConverterStatus(
+                    ok = if (status.has("ok")) status.getString("ok") else null,
+                    error = if (status.has("error")) status.getString("error") else null,
+                )
+            }
         }
     }
     val lines = root.getJSONArray("lines").let { array ->

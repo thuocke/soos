@@ -99,7 +99,7 @@ pub(crate) fn error_budget(gutter_right: f32, row_right: f32, gutter_budget: f32
 }
 
 /// The line the caret is on, counting from 0.
-fn caret_line(text: &str, cursor: Option<CCursorRange>) -> Option<usize> {
+pub(crate) fn caret_line(text: &str, cursor: Option<CCursorRange>) -> Option<usize> {
     let index = cursor?.primary.index.0;
     Some(text.chars().take(index).filter(|&c| c == '\n').count())
 }

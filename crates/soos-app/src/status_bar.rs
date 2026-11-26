@@ -258,14 +258,16 @@ impl SoosApp {
                 close = true;
             }
         }
-        let count = match self.converters.len() {
+        let count = match soos_core::parse_converters(&self.converters)
+            .converters
+            .len()
+        {
             0 => "none yet".to_string(),
             1 => "1 unit".to_string(),
             n => format!("{n} units"),
         };
         if setting_row(ui, palette, "Your converters", &count).clicked() {
             self.show_converters = true;
-            self.focus_converter = Some(0);
             close = true;
         }
         close
