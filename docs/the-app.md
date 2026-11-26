@@ -62,13 +62,10 @@ The bar also shows:
 ![With the comma on: 3,5 + 1 is 4,5, 3.000.000 stays three million, and the status bar shows 0,1 in green](img/decimal-comma.png)
 
 By default `,` groups thousands and `.` is the decimal mark, so `3,000,000`
-is three million and `1,5` is 15. To write one and a half as `1,5`:
-
-1. Click `0.1` in the status bar. It turns into `0,1`.
-2. Type `,` for the decimal mark and `.` between thousands: `3,5 + 1` is
-   `4,5`, and `3.000.000` is three million.
-
-Click `0,1` to switch back.
+is three million and `1,5` is 15. Clicking `0.1` in the status bar
+switches the marks: it turns into `0,1`, `,` becomes the decimal mark and
+`.` groups thousands, so `3,5 + 1` is `4,5` and `3.000.000` is three
+million. Clicking `0,1` switches back.
 
 - It is one setting for the whole app, saved with your tabs: it covers every
   tab and stays on after a restart.
@@ -98,6 +95,26 @@ right-click it for Quit.
   Soos turns all three off on every Linux desktop, X11 included.
 - Some desktops (GNOME without an AppIndicator extension) show no tray at
   all.
+
+## On Android
+
+The same engine and the same rules, so every page of this guide applies. What
+differs is the touch screen.
+
+- Tap a result to copy it. Tap an error to read its full message, which
+  hovering would show on a desktop. Either appears in a note over the bottom
+  of the page.
+- The result column is at most 40% of the screen wide. A result too long for
+  it ends in `…`; tap it, and the note shows all of it as it's copied.
+- Close a tab with the `×` on it. An **Undo** bar brings it back for a few
+  seconds; there is no Cmd/Ctrl+Shift+T.
+- The status bar has `↔`, `0.1` and `±`, which work as [above](#the-status-bar).
+  The theme follows the system. There is no `?` example, update check,
+  hotkey, tray icon or always-on-top.
+- Exchange rates refresh when you open Soos.
+- Your tabs stay on the phone, as on a desktop: they aren't part of
+  Android's cloud backup, and they don't move to a new phone with Android's
+  setup tools.
 
 ## Error labels
 
