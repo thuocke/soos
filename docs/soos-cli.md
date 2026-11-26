@@ -41,7 +41,7 @@ To run it from any terminal, see [Put soos-cli on your PATH](soos-cli-path.md).
 | Option | What it does |
 |---|---|
 | `--json` | Prints one line of JSON; see [JSON output](#json-output). |
-| `--high-precision` | Keeps every digit instead of rounding currencies: the app's `±` toggle. |
+| `--high-precision` | Keeps every digit instead of rounding currencies: the app's **Currency amounts** setting. |
 | `-h`, `--help` | Prints help. |
 | `-V`, `--version` | Prints the version. |
 | `--` | Everything after it is the expression, even if it starts with `--`. |
@@ -82,9 +82,9 @@ The keys come in alphabetical order. They hold:
   such as PowerToys Run stays fast.
 - With no saved rates and no network, a document in one currency still
   works. A line that needs a second currency says `no rates yet`.
-- `soos-cli` uses the converters you've set in the app (`↔`), once you
+- `soos-cli` uses the converters you've set in the app (`settings` > **Your converters**), once you
   close the converters window.
-- Settings such as `±` stay in the app; `soos-cli` takes `--high-precision`
+- Settings such as **Currency amounts** stay in the app; `soos-cli` takes `--high-precision`
   instead.
 
 ### Data folder

@@ -4,16 +4,23 @@
 use std::time::Duration;
 
 use eframe::egui::text::LayoutJob;
-use eframe::egui::{self, Color32, Theme, ViewportCommand};
+use eframe::egui::{self, Color32, ViewportCommand};
 
 use crate::editor::APP_PADDING;
-use crate::style::{cap_center_offset, mono, status_symbol, status_text, Palette};
+use crate::style::{cap_center_offset, mono, status_symbol, status_text, Palette, LINE_HEIGHT};
 use crate::tray::FULL_DESKTOP;
 use crate::update::{open_url, update_message};
 use crate::SoosApp;
 
 /// How long "Copied ..." stays in the message slot.
 const COPIED_FOR: Duration = Duration::from_millis(1500);
+/// Between the words on the right of the status bar.
+const STATUS_WORD_GAP: f32 = 16.0;
+/// The settings panel's rows: side padding, corner radius, and how far
+/// hover or focus tints a row toward the text colour.
+const SETTING_ROW_PADDING: f32 = 10.0;
+const SETTING_ROW_RADIUS: f32 = 4.0;
+const SETTING_ROW_TINT: f32 = 0.08;
 /// Rates older than this get an age warning.
 const RATES_OLD_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -60,19 +67,13 @@ impl SoosApp {
                         }
                         self.rates_status(ui, palette);
                         let left_end = ui.min_rect().right();
-                        // Right to left, so this reads "↔ ? ▲ 0.1 ± ◌ ⌨".
+                        // Right to left, so this reads "example 0.1 settings".
                         let icons = ui
                             .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                #[cfg(not(target_os = "linux"))]
-                                self.hotkey_control(ui, palette);
-                                theme_control(ui, palette);
-                                self.high_precision_control(ui, palette);
+                                ui.spacing_mut().item_spacing.x = STATUS_WORD_GAP;
+                                self.settings_control(ui, palette);
                                 self.decimal_comma_control(ui, palette);
-                                if FULL_DESKTOP {
-                                    self.always_on_top_control(ui, palette);
-                                }
                                 self.example_control(ui, palette);
-                                self.converters_control(ui, palette);
                             })
                             .response
                             .rect;
@@ -148,25 +149,8 @@ impl SoosApp {
             })
     }
 
-    fn high_precision_control(&mut self, ui: &mut egui::Ui, palette: Palette) {
-        let tooltip = if self.high_precision {
-            "High precision is on: currencies keep every digit"
-        } else {
-            "High precision is off: currencies are rounded"
-        };
-        if symbol_toggle(
-            ui,
-            palette,
-            "\u{b1}",
-            self.high_precision,
-            palette.result,
-            tooltip,
-        ) {
-            self.high_precision = !self.high_precision;
-        }
-    }
-
-    /// The glyph shows how a decimal reads now. Recalculates, since the
+    /// The label shows how a decimal reads now, so its state isn't told by
+    /// colour. Recalculates, since the
     /// text sent to the engine changes with it, though the text itself
     /// doesn't.
     fn decimal_comma_control(&mut self, ui: &mut egui::Ui, palette: Palette) {
@@ -181,35 +165,12 @@ impl SoosApp {
                 "Decimal point is on: 1,234.5. Click for a decimal comma, 1.234,5",
             )
         };
-        if symbol_toggle(
-            ui,
-            palette,
-            glyph,
-            self.decimal_comma,
-            palette.result,
-            tooltip,
-        ) {
+        if status_symbol(ui, glyph, palette.comment, palette)
+            .on_hover_text(tooltip)
+            .clicked()
+        {
             self.decimal_comma = !self.decimal_comma;
             self.force_recalc();
-        }
-    }
-
-    fn always_on_top_control(&mut self, ui: &mut egui::Ui, palette: Palette) {
-        let tooltip = if self.always_on_top {
-            "Always on top is on"
-        } else {
-            "Always on top is off"
-        };
-        if symbol_toggle(
-            ui,
-            palette,
-            "\u{25b2}",
-            self.always_on_top,
-            palette.keyword,
-            tooltip,
-        ) {
-            self.always_on_top = !self.always_on_top;
-            self.apply_always_on_top(ui.ctx());
         }
     }
 
@@ -228,14 +189,10 @@ impl SoosApp {
         } else {
             "Show an example of what Soos understands"
         };
-        if symbol_toggle(
-            ui,
-            palette,
-            "?",
-            self.show_example,
-            palette.keyword,
-            tooltip,
-        ) {
+        if status_symbol(ui, "example", palette.comment, palette)
+            .on_hover_text(tooltip)
+            .clicked()
+        {
             self.show_example = !self.show_example;
             if self.show_example {
                 // So the document doesn't take keystrokes behind the overlay.
@@ -244,78 +201,127 @@ impl SoosApp {
         }
     }
 
-    fn converters_control(&mut self, ui: &mut egui::Ui, palette: Palette) {
-        if symbol_toggle(
-            ui,
-            palette,
-            "\u{2194}",
-            self.show_converters,
-            palette.keyword,
-            "Converters: define your own units",
-        ) {
-            self.show_converters = !self.show_converters;
-            if self.show_converters {
-                // Only on opening: stopping text input every frame would
-                // make the table impossible to type in.
-                ui.ctx().memory_mut(|m| m.stop_text_input());
-                self.focus_converter = Some(0);
-            }
+    fn settings_control(&mut self, ui: &mut egui::Ui, palette: Palette) {
+        if status_symbol(ui, "settings", palette.comment, palette)
+            .on_hover_text("Theme, always on top, precision, hotkey and your converters")
+            .clicked()
+        {
+            self.show_settings = true;
+            // So the document doesn't take keystrokes behind the panel.
+            ui.ctx().memory_mut(|m| m.stop_text_input());
         }
     }
-}
 
-/// A status-bar symbol in `palette.comment`, fading to `on_color` while
-/// `on`. Returns whether it was clicked.
-fn symbol_toggle(
-    ui: &mut egui::Ui,
-    palette: Palette,
-    glyph: &str,
-    on: bool,
-    on_color: Color32,
-    tooltip: &str,
-) -> bool {
-    let t = ui
-        .ctx()
-        .animate_bool_with_time(ui.id().with(glyph), on, 0.12);
-    let color = palette.comment.lerp_to_gamma(on_color, t);
-    status_symbol(ui, glyph, color, palette)
-        .on_hover_text(tooltip)
-        .clicked()
-}
+    /// The settings panel: one row per setting, its name on the left and
+    /// what it is now on the right, so no state is told by colour or by a
+    /// symbol. A row is as wide as the panel and a line tall, takes Tab
+    /// focus, and Enter or Space works like a click. Returns whether to
+    /// close the panel.
+    pub(crate) fn settings_panel(&mut self, ui: &mut egui::Ui, palette: Palette) -> bool {
+        use egui::ThemePreference;
+        let mut close = false;
+        ui.spacing_mut().item_spacing.y = 0.0;
 
-/// Cycles the theme: follow the system, light, dark. egui persists the
-/// choice.
-fn theme_control(ui: &mut egui::Ui, palette: Palette) {
-    use egui::ThemePreference;
-    let preference = ui.ctx().options(|o| o.theme_preference);
-    let effective = match ui.ctx().theme() {
-        Theme::Dark => "dark",
-        Theme::Light => "light",
-    };
-    let (glyph, current, next, next_name) = match preference {
-        ThemePreference::System => (
-            "\u{25cc}",
-            format!("follows the system ({effective})"),
-            ThemePreference::Light,
-            "light",
-        ),
-        ThemePreference::Light => (
-            "\u{25cb}",
-            "light".to_string(),
-            ThemePreference::Dark,
-            "dark",
-        ),
-        ThemePreference::Dark => (
-            "\u{25cf}",
-            "dark".to_string(),
-            ThemePreference::System,
-            "the system's",
-        ),
-    };
-    let tooltip = format!("Theme: {current}. Click for {next_name}.");
-    if symbol_toggle(ui, palette, glyph, false, palette.keyword, &tooltip) {
-        ui.ctx().set_theme(next);
+        let preference = ui.ctx().options(|o| o.theme_preference);
+        let (theme, next) = match preference {
+            ThemePreference::System => ("same as the system", ThemePreference::Light),
+            ThemePreference::Light => ("light", ThemePreference::Dark),
+            ThemePreference::Dark => ("dark", ThemePreference::System),
+        };
+        if setting_row(ui, palette, "Theme", theme).clicked() {
+            ui.ctx().set_theme(next);
+        }
+        if FULL_DESKTOP
+            && setting_row(ui, palette, "Always on top", on_off(self.always_on_top)).clicked()
+        {
+            self.always_on_top = !self.always_on_top;
+            self.apply_always_on_top(ui.ctx());
+        }
+        let digits = if self.high_precision {
+            "every digit"
+        } else {
+            "rounded"
+        };
+        if setting_row(ui, palette, "Currency amounts", digits).clicked() {
+            self.high_precision = !self.high_precision;
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let hotkey = if self.hotkeys.is_some() {
+                crate::hotkey::hotkey_label(&self.current_hotkey)
+            } else {
+                "not available here".to_string()
+            };
+            if setting_row(ui, palette, "Hotkey", &hotkey).clicked() && self.hotkeys.is_some() {
+                self.capturing_hotkey = true;
+                self.hotkey_message = None;
+                close = true;
+            }
+        }
+        let count = match self.converters.len() {
+            0 => "none yet".to_string(),
+            1 => "1 unit".to_string(),
+            n => format!("{n} units"),
+        };
+        if setting_row(ui, palette, "Your converters", &count).clicked() {
+            self.show_converters = true;
+            self.focus_converter = Some(0);
+            close = true;
+        }
+        close
     }
+}
+
+fn on_off(on: bool) -> &'static str {
+    if on {
+        "on"
+    } else {
+        "off"
+    }
+}
+
+/// One row of the settings panel: `label` in plain text on the left, its
+/// current `value` in the accent on the right. Hover and keyboard focus
+/// tint the row, and focus also draws an outline.
+fn setting_row(ui: &mut egui::Ui, palette: Palette, label: &str, value: &str) -> egui::Response {
+    let size = egui::vec2(ui.available_width(), LINE_HEIGHT);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let lit = ui
+            .ctx()
+            .animate_bool(response.id, response.hovered() || response.has_focus());
+        let fill = palette
+            .background
+            .lerp_to_gamma(palette.plain, lit * SETTING_ROW_TINT);
+        ui.painter().rect_filled(rect, SETTING_ROW_RADIUS, fill);
+        if response.has_focus() {
+            ui.painter().rect_stroke(
+                rect,
+                SETTING_ROW_RADIUS,
+                egui::Stroke::new(1.0, palette.keyword),
+                egui::StrokeKind::Inside,
+            );
+        }
+        let text = |text: &str, color: Color32| {
+            ui.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), mono(), color))
+        };
+        let label_galley = text(label, palette.plain);
+        let value_galley = text(value, palette.keyword);
+        let y =
+            |galley: &egui::Galley| rect.center().y - galley.size().y / 2.0 + cap_center_offset(ui);
+        let value_pos = egui::pos2(
+            rect.right() - SETTING_ROW_PADDING - value_galley.size().x,
+            y(&value_galley),
+        );
+        let label_pos = egui::pos2(rect.left() + SETTING_ROW_PADDING, y(&label_galley));
+        ui.painter().galley(label_pos, label_galley, palette.plain);
+        ui.painter()
+            .galley(value_pos, value_galley, palette.keyword);
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{label}: {value}"))
+    });
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Paints `message` centred on `row`, within the free span `(left, right)`

@@ -43,4 +43,4 @@ There is no download: you build it from this repository.
   needs rates, which couldn't be fetched and aren't saved yet. Open the app
   once while online.
 - *A converter from the app isn't recognized:* open and close the app's
-  converters window (`↔`) so it saves them for `soos-cli`.
+  converters table (`settings` > **Your converters**) so it saves them for `soos-cli`.

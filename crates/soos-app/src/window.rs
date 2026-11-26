@@ -16,6 +16,7 @@ pub(crate) const MODAL_INNER_MARGIN: i8 = 18;
 const MODAL_WINDOW_MARGIN: f32 = 20.0;
 
 pub(crate) const EXAMPLE_MODAL_WIDTH: f32 = 480.0;
+pub(crate) const SETTINGS_MODAL_WIDTH: f32 = 420.0;
 
 /// A scratchpad's width, not an editor's: results stay near the lines they
 /// answer. Fits the example overlay; the window widens for the converters

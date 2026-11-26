@@ -36,19 +36,27 @@ the [decimal comma](#decimal-comma) on, it copies in that form:
 
 ## The status bar
 
-![The status bar: the version number on the left; on the right ↔, ?, ▲, 0.1, ±, ◌ and ⌨](img/status-bar.png)
+![The status bar: the version number on the left; on the right the words example, 0.1 and settings](img/status-bar.png)
 
-Left to right. Hover over an icon to see what it does.
+On the right, left to right:
 
-| Icon | Does |
+| Word | Does |
 |---|---|
-| `↔` | Opens [your converters](money-and-units.md#your-own-converters) |
-| `?` | Shows a worked example |
-| `▲` | Keeps the window on top |
+| `example` | Shows a worked example |
 | `0.1` `0,1` | Decimal mark: a point or a comma. Click to switch; see [Decimal comma](#decimal-comma) |
-| `±` | Shows every digit of a currency amount, and 10 decimals of a `≈` result |
-| `◌` `○` `●` | Theme: follows the system, light, dark. Click to cycle |
-| `⌨` | Sets the global hotkey |
+| `settings` | Opens the settings below |
+
+Each setting is a row with its name on the left and what it is now on the
+right. Click a row to change it, or move to it with Tab and press Enter.
+Esc or a click outside closes the list.
+
+| Setting | Does |
+|---|---|
+| Theme | Same as the system, light or dark. Each click moves to the next |
+| Always on top | Keeps the window above other windows |
+| Currency amounts | `rounded`, or `every digit`, which also shows 10 decimals of a `≈` result |
+| Hotkey | Sets the global hotkey: click it, then press the new key |
+| Your converters | Opens [your converters](money-and-units.md#your-own-converters) |
 
 The bar also shows:
 
@@ -59,7 +67,7 @@ The bar also shows:
 
 ## Decimal comma
 
-![With the comma on: 3,5 + 1 is 4,5, 3.000.000 stays three million, and the status bar shows 0,1 in green](img/decimal-comma.png)
+![With the comma on: 3,5 + 1 is 4,5, 3.000.000 stays three million, and the status bar shows 0,1](img/decimal-comma.png)
 
 By default `,` groups thousands and `.` is the decimal mark, so `3,000,000`
 is three million and `1,5` is 15. Clicking `0.1` in the status bar
@@ -83,9 +91,10 @@ right-click it for Quit.
 |---|---|---|---|
 | Closing the window | hides it to the tray | minimizes it; the Dock icon brings it back | quits |
 | Global hotkey shows and hides it | Calculator key | Ctrl+Shift+Space; hiding also removes the Dock icon | none |
-| Always on top `▲` | yes | yes | none |
+| Always on top | yes | yes | none |
 
-- To change the hotkey, click `⌨`, then press the new key.
+- To change the hotkey, click `settings`, then **Hotkey**, then press the
+  new key.
 - If the tray icon fails to appear on Windows or macOS, closing the window
   quits instead of hiding it.
 
@@ -108,7 +117,8 @@ differs is the touch screen.
   it ends in `…`; tap it, and the note shows all of it as it's copied.
 - Close a tab with the `×` on it. An **Undo** bar brings it back for a few
   seconds; there is no Cmd/Ctrl+Shift+T.
-- The status bar has `↔`, `0.1` and `±`, which work as [above](#the-status-bar).
+- The status bar has `↔` for your converters, `0.1` for the decimal mark
+  and `±` for every digit of a currency amount.
   The theme follows the system. There is no `?` example, update check,
   hotkey, tray icon or always-on-top.
 - Exchange rates refresh when you open Soos.

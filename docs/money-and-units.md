@@ -49,9 +49,9 @@ symbol. Any other currency is written and shown with its code.
 - A `≈` amount of money rounds as above: `$10 / 3` is `≈ $3.33`.
 - Any other `≈` result shows four decimals, or four significant digits
   below 1: `1/300` is `≈ 0.003333`.
-- To see more digits, hover over the result or copy it. `±` in the status
-  bar keeps every digit of an amount (`$1,234.567`) and shows 10 decimals
-  of a `≈` result (`≈ 0.3333333333`).
+- To see more digits, hover over the result or copy it. **Currency
+  amounts** in `settings` (`±` on Android) keeps every digit of an amount
+  (`$1,234.567`) and shows 10 decimals of a `≈` result (`≈ 0.3333333333`).
 
 ### Exchange rates
 
@@ -98,7 +98,7 @@ Click a result to copy it without thousands separators; see
 ## Your own converters
 
 A converter is a unit you name, in terms of one Soos already knows. Add one
-in the table behind `↔` in the status bar: see
+in the table behind `settings` > **Your converters** (`↔` on Android): see
 [Add your own converter](own-converter.md). Each row has four columns:
 
 | Column | Holds | Example |

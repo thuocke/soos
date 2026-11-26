@@ -17,7 +17,7 @@ use crate::SoosApp;
 pub(crate) const PLACEHOLDER: &str = "Type a calculation, like 15% off $120";
 
 /// How far out-of-date results fade toward the background.
-const STALE_DIM: f32 = 0.55;
+const STALE_DIM: f32 = 0.35;
 
 /// An error on the line being typed waits this long after the last
 /// keystroke: half a line is usually an error (`5 k` before `5 kg`).

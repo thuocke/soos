@@ -37,7 +37,8 @@ use tabs::{load_tabs, Tab};
 use tray::{restored_by_the_system, window_icon, FULL_DESKTOP, MINIMIZE_SETTLES};
 use update::UpdateStatus;
 use window::{
-    soos_modal, DEFAULT_HEIGHT, DEFAULT_WIDTH, EXAMPLE_MODAL_WIDTH, MAIN_MIN_HEIGHT, MAIN_MIN_WIDTH,
+    soos_modal, DEFAULT_HEIGHT, DEFAULT_WIDTH, EXAMPLE_MODAL_WIDTH, MAIN_MIN_HEIGHT,
+    MAIN_MIN_WIDTH, SETTINGS_MODAL_WIDTH,
 };
 
 fn main() -> eframe::Result<()> {
@@ -222,6 +223,7 @@ struct SoosApp {
     /// Why the last hotkey couldn't be used.
     hotkey_message: Option<String>,
     show_example: bool,
+    show_settings: bool,
     update_status: Option<UpdateStatus>,
     /// The last copied result and when, for the status bar's "Copied".
     copied: Option<(String, Instant)>,
@@ -307,6 +309,7 @@ impl SoosApp {
             capturing_hotkey: false,
             hotkey_message: None,
             show_example: false,
+            show_settings: false,
             update_status: None,
             copied: None,
             tray: None,
@@ -540,6 +543,15 @@ impl eframe::App for SoosApp {
             });
             if modal.should_close() || modal.inner {
                 self.show_example = false;
+            }
+        }
+
+        if self.show_settings {
+            let modal = soos_modal(ui, palette, "settings", SETTINGS_MODAL_WIDTH, |ui| {
+                self.settings_panel(ui, palette)
+            });
+            if modal.should_close() || modal.inner {
+                self.show_settings = false;
             }
         }
 

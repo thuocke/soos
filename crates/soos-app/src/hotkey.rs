@@ -5,7 +5,6 @@ use eframe::egui;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{Error as HotkeyError, GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
-use crate::style::{status_symbol, Palette};
 use crate::{AppEvent, SavedState, SoosApp};
 
 /// The keyboard's Calculator key on Windows (`global-hotkey` 0.10 or newer
@@ -134,34 +133,6 @@ impl SoosApp {
                 repaint_ctx.request_repaint();
             }
         }));
-    }
-
-    /// `⌨`: click to record a new hotkey, click again to cancel.
-    pub(crate) fn hotkey_control(&mut self, ui: &mut egui::Ui, palette: Palette) {
-        let tooltip = if self.hotkeys.is_none() {
-            "Global hotkeys aren't available on this system".to_string()
-        } else if self.capturing_hotkey {
-            "Press the new hotkey, or click here to cancel".to_string()
-        } else {
-            format!(
-                "Show or hide Soos from any app with {}. Click to change it.",
-                hotkey_label(&self.current_hotkey)
-            )
-        };
-        let color = if self.capturing_hotkey {
-            palette.keyword
-        } else {
-            palette.comment
-        };
-        let clicked = status_symbol(ui, "\u{2328}", color, palette)
-            .on_hover_text(tooltip)
-            .clicked();
-        if clicked && self.hotkeys.is_some() {
-            self.capturing_hotkey = !self.capturing_hotkey;
-            self.hotkey_message = None;
-            // So the key pressed next doesn't also land in the document.
-            ui.ctx().memory_mut(|m| m.stop_text_input());
-        }
     }
 
     /// While capturing: the first real key press becomes the hotkey, Esc

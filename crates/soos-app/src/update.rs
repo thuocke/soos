@@ -78,7 +78,8 @@ pub(crate) fn update_message(status: &UpdateStatus, palette: Palette) -> StatusM
         UpdateStatus::UpToDate => ("You're up to date".to_string(), palette.comment, None),
         UpdateStatus::Available { version, url } => (
             format!("Version {version} is available"),
-            palette.result,
+            // The accent rather than the results' green, which means "answer".
+            palette.keyword,
             Some(url.clone()),
         ),
         UpdateStatus::Failed => (
